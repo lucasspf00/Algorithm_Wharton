@@ -1,0 +1,7 @@
+streamlit>=1.40
+pandas>=2.2
+numpy>=1.26
+yfinance>=0.2.50
+plotly>=5.24
+PyYAML>=6.0
+certifi>=2024.8

@@ -1,0 +1,71 @@
+scoring:
+  category_weights:
+    growth: 0.30
+    quality: 0.40
+    valuation: 0.30
+
+  growth_branch_weights:
+    revenue: 0.35
+    earnings: 0.35
+    fcf: 0.30
+
+  growth_horizon_weights:
+    one_year: 0.20
+    three_year: 0.50
+    five_year: 0.30
+
+  growth_caps:
+    revenue_growth_1y: 0.30
+    revenue_growth_3y: 0.25
+    revenue_growth_5y: 0.20
+    eps_growth_1y: 0.50
+    eps_growth_3y: 0.35
+    eps_growth_5y: 0.30
+    fcf_growth_1y: 0.50
+    fcf_growth_3y: 0.40
+    fcf_growth_5y: 0.35
+
+  quality_weights:
+    operating_margin: 0.25
+    net_margin: 0.20
+    return_on_equity: 0.20
+    current_ratio: 0.15
+    debt_to_equity: 0.20
+
+  valuation_weights:
+    trailing_pe: 0.25
+    forward_pe: 0.25
+    price_to_sales: 0.15
+    price_to_book: 0.15
+    ev_to_ebitda: 0.20
+
+  risk_weights:
+    annualized_volatility: 0.35
+    max_drawdown: 0.35
+    downside_deviation: 0.20
+    beta: 0.10
+
+  minimum_data_confidence: 0.55
+
+optimizer:
+  lookback_years: 5
+  simulations: 5000
+  max_weight: 0.20
+  risk_free_rate: 0.04
+  covariance_shrinkage: 0.20
+
+laura:
+  contribution_2027: 300000
+  contribution_2028: 150000
+  annual_payment: 50000
+  payment_count: 10
+  reserve_yield: 0.04
+
+stress:
+  custom_equity_shock: -0.30
+  custom_tech_shock: -0.40
+  custom_fixed_income_shock: -0.05
+
+data:
+  cache_dir: .cache
+  cache_ttl_hours: 24

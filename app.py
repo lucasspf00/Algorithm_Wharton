@@ -98,6 +98,31 @@ def current_weights() -> pd.Series | None:
     return p["weights"] if p else None
 
 
+def ensure_laura_portfolio(result: dict | None) -> dict | None:
+    """Add Laura Portfolio to results retained from an older Streamlit session."""
+    if not result or "Laura Portfolio" in result.get("portfolios", {}):
+        return result
+    portfolios = result.get("portfolios", {})
+    max_sharpe = portfolios.get("Maximum Sharpe")
+    min_vol = portfolios.get("Minimum Volatility")
+    if not max_sharpe or not min_vol:
+        return result
+    weights = (max_sharpe["weights"] * 0.50) + (min_vol["weights"] * 0.50)
+    mu = result["expected_returns"].reindex(weights.index).to_numpy()
+    cov = result["covariance"].loc[weights.index, weights.index].to_numpy()
+    expected_return = float(weights.to_numpy() @ mu)
+    volatility = float(np.sqrt(max(weights.to_numpy() @ cov @ weights.to_numpy(), 0.0)))
+    rf = float(cfg["optimizer"]["risk_free_rate"])
+    result["portfolios"]["Laura Portfolio"] = {
+        "weights": weights,
+        "expected_return": expected_return,
+        "volatility": volatility,
+        "sharpe": (expected_return - rf) / volatility if volatility > 0 else np.nan,
+        "construction": "50% Maximum Sharpe + 50% Minimum Volatility",
+    }
+    return result
+
+
 st.title("Laura Gao Quantitative Investment System — Simplified")
 st.caption(
     "Eight-tab version: profile-specific stock, company, and ETF analysis, sector ranking, portfolio construction, optimization, stress testing, and settings."
@@ -375,7 +400,8 @@ with tabs[5]:
             except Exception as e:
                 st.error(str(e))
 
-        result = st.session_state.optimizer_result
+        result = ensure_laura_portfolio(st.session_state.optimizer_result)
+        st.session_state.optimizer_result = result
         if result:
             names = list(result["portfolios"].keys())
             selected = st.selectbox("Portfolio to use", names, index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0, key="t4_select")

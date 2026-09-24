@@ -115,19 +115,6 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "sharpe": float(stats.loc[i, "sharpe"]),
         }
 
-    # Laura Portfolio balances the configured preferred reference (Maximum
-    # Sharpe) with Minimum Volatility to preserve flexibility for the 2033
-    # reserve. The blend remains feasible because both source portfolios are.
-    laura_w = (W[max_sharpe_i] * 0.50) + (W[min_vol_i] * 0.50)
-    laura_ret, laura_vol, laura_sharpe = portfolio_stats(laura_w, mu, cov, rf)
-    laura_portfolio = {
-        "weights": pd.Series(laura_w, index=tickers),
-        "expected_return": laura_ret,
-        "volatility": laura_vol,
-        "sharpe": laura_sharpe,
-        "construction": "50% Maximum Sharpe + 50% Minimum Volatility",
-    }
-
     return {
         "returns": returns,
         "expected_returns": mu_s,
@@ -138,7 +125,6 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "Minimum Volatility": pack(min_vol_i),
             "Maximum Sharpe": pack(max_sharpe_i),
             "Maximum Expected Return": pack(max_return_i),
-            "Laura Portfolio": laura_portfolio,
         },
     }
 
@@ -153,6 +139,27 @@ def laura_value_2033(expected_return: float, contribution_2027: float = 300000, 
     if r <= -1:
         return 0.0
     return contribution_2027 * (1 + r) ** 6 + contribution_2028 * (1 + r) ** 5
+
+
+def simulate_2033_distribution(
+    expected_return: float,
+    volatility: float,
+    contribution_2027: float = 300000,
+    contribution_2028: float = 150000,
+    simulations: int = 100000,
+    seed: int = 20260924,
+) -> pd.Series:
+    """Simulate the 2033 value from Laura's two starting cash flows.
+
+    This is a model distribution, not a funding-confidence calculation.
+    """
+    if simulations < 1 or volatility < 0 or expected_return <= -1:
+        raise ValueError("Invalid return, volatility, or simulation settings.")
+    rng = np.random.default_rng(seed)
+    drift = expected_return - 0.5 * volatility**2
+    paths_2027 = np.exp(rng.normal(drift, volatility, (simulations, 6)).sum(axis=1))
+    paths_2028 = np.exp(rng.normal(drift, volatility, (simulations, 5)).sum(axis=1))
+    return pd.Series(contribution_2027 * paths_2027 + contribution_2028 * paths_2028)
 
 
 def deterministic_reserve_requirement(payment: float = 50000, count: int = 10, annual_yield: float = 0.04) -> float:

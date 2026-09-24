@@ -8,7 +8,7 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import load_config
 from src.scoring import normalize_symmetric, score_security
-from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033
+from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033, simulate_2033_distribution
 from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type
 from src.stress import hypothetical_stress
 from src.reserve import (
@@ -88,6 +88,7 @@ assert w.max() <= 0.2000001
 reserve = deterministic_reserve_requirement(50000, 10, 0.04)
 assert 400000 < reserve < 500000
 assert laura_value_2033(0.0) == 450000
+assert len(simulate_2033_distribution(0.04, 0.12, simulations=1000, seed=7)) == 1000
 reserve_assets = pd.DataFrame([
     {"asset": "SGOV", "weight": 0.5, "yield": 0.04},
     {"asset": "BIL", "weight": 0.5, "yield": 0.04},
@@ -127,7 +128,7 @@ test_cfg = load_config()
 test_cfg["optimizer"]["simulations"] = 500
 test_cfg["optimizer"]["max_weight"] = 0.20
 opt = monte_carlo_optimize(synthetic, test_cfg)
-assert set(opt["portfolios"]) == {"Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return", "Laura Portfolio"}
+assert set(opt["portfolios"]) == {"Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return"}
 for p in opt["portfolios"].values():
     assert np.isclose(p["weights"].sum(), 1.0)
     assert p["weights"].max() <= 0.2000001

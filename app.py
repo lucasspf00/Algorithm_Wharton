@@ -26,7 +26,7 @@ from src.scoring import score_security
 from src.optimizer import (
     monte_carlo_optimize,
     laura_value_2033,
-    deterministic_reserve_requirement,
+    simulate_2033_distribution,
 )
 from src.stress import HISTORICAL_WINDOWS, historical_portfolio_stress, hypothetical_stress
 from src.reserve import (
@@ -157,31 +157,6 @@ def current_weights() -> pd.Series | None:
     name = st.session_state.selected_portfolio
     p = result["portfolios"].get(name)
     return p["weights"] if p else None
-
-
-def ensure_laura_portfolio(result: dict | None) -> dict | None:
-    """Add Laura Portfolio to results retained from an older Streamlit session."""
-    if not result or "Laura Portfolio" in result.get("portfolios", {}):
-        return result
-    portfolios = result.get("portfolios", {})
-    max_sharpe = portfolios.get("Maximum Sharpe")
-    min_vol = portfolios.get("Minimum Volatility")
-    if not max_sharpe or not min_vol:
-        return result
-    weights = (max_sharpe["weights"] * 0.50) + (min_vol["weights"] * 0.50)
-    mu = result["expected_returns"].reindex(weights.index).to_numpy()
-    cov = result["covariance"].loc[weights.index, weights.index].to_numpy()
-    expected_return = float(weights.to_numpy() @ mu)
-    volatility = float(np.sqrt(max(weights.to_numpy() @ cov @ weights.to_numpy(), 0.0)))
-    rf = float(cfg["optimizer"]["risk_free_rate"])
-    result["portfolios"]["Laura Portfolio"] = {
-        "weights": weights,
-        "expected_return": expected_return,
-        "volatility": volatility,
-        "sharpe": (expected_return - rf) / volatility if volatility > 0 else np.nan,
-        "construction": "50% Maximum Sharpe + 50% Minimum Volatility",
-    }
-    return result
 
 
 st.title("Laura Gao Quantitative Investment System — Simplified")
@@ -479,9 +454,10 @@ with tabs[5]:
             except Exception as e:
                 st.error(str(e))
 
-        result = ensure_laura_portfolio(st.session_state.optimizer_result)
-        st.session_state.optimizer_result = result
+        result = st.session_state.optimizer_result
         if result:
+            # Discard legacy fourth-option results retained by an older session.
+            result["portfolios"].pop("Laura Portfolio", None)
             names = list(result["portfolios"].keys())
             selected = st.selectbox("Portfolio to use", names, index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0, key="t4_select")
             st.session_state.selected_portfolio = selected
@@ -511,32 +487,36 @@ with tabs[5]:
             st.markdown("**Correlation matrix**")
             st.dataframe(result["correlation"].round(2), use_container_width=True)
 
-            # Simple Laura-specific lens kept inside the optimizer instead of separate tabs.
-            v2033 = laura_value_2033(
+            distribution = simulate_2033_distribution(
+                p["expected_return"], p["volatility"],
+                cfg["laura"]["contribution_2027"],
+                cfg["laura"]["contribution_2028"],
+                simulations=100000,
+                seed=20260924,
+            )
+            st.markdown("**Illustrative Expected 2033 Portfolio Value**")
+            st.metric("Expected-value estimate", fmt_money(laura_value_2033(
                 p["expected_return"],
                 cfg["laura"]["contribution_2027"],
                 cfg["laura"]["contribution_2028"],
-            )
-            reserve = deterministic_reserve_requirement(
-                cfg["laura"]["annual_payment"],
-                cfg["laura"]["payment_count"],
-                cfg["laura"]["reserve_yield"],
-            )
-            st.markdown("**Laura 2033 deterministic lens**")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Projected 2033 value", fmt_money(v2033))
-            c2.metric("PV of 10 × $50k reserve", fmt_money(reserve))
-            c3.metric("Capital above reserve", fmt_money(v2033 - reserve))
-            if selected == "Laura Portfolio":
-                st.caption("Laura Portfolio construction: 50% Maximum Sharpe + 50% Minimum Volatility. This is a model assumption, not a funding-confidence guarantee.")
-            st.caption("This is an assumption-driven expected-value illustration using the portfolio's historical-return estimate. It is not a funding-probability calculation or a guarantee.")
+            )))
+            st.caption("Assumption-driven estimate from the 2027 $300,000 and 2028 $150,000 starting cash flows; not a guarantee and not a 99.5% funding target.")
+            percentiles = pd.DataFrame({
+                "Percentile": ["5th", "25th", "50th", "75th", "95th"],
+                "2033 portfolio value": [
+                    fmt_money(distribution.quantile(q))
+                    for q in (0.05, 0.25, 0.50, 0.75, 0.95)
+                ],
+            })
+            st.dataframe(percentiles, hide_index=True, use_container_width=True)
+            st.caption("Simulated result: 100,000 reproducible paths using the selected portfolio's historical expected return and volatility; seed 20260924.")
 
 # ------------------------- TAB 7 -------------------------
 with tabs[6]:
     st.subheader("Stress Test")
     result = st.session_state.optimizer_result
     if not result:
-        st.warning("Run Tab 4 first so the stress test has portfolio weights.")
+        st.warning("Run Tab 6 first so the stress test has portfolio weights.")
     else:
         names = list(result["portfolios"].keys())
         portfolio_name = st.selectbox("Portfolio", names, index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0, key="t9_portfolio")
@@ -586,13 +566,11 @@ with tabs[6]:
 
         baseline_2033 = laura_value_2033(expected_return, cfg["laura"]["contribution_2027"], cfg["laura"]["contribution_2028"])
         pre2033_after_shock = baseline_2033 * (1.0 + port_shock)
-        reserve = deterministic_reserve_requirement(cfg["laura"]["annual_payment"], cfg["laura"]["payment_count"], cfg["laura"]["reserve_yield"])
         st.markdown("### Laura funding lens")
-        s1, s2, s3 = st.columns(3)
+        s1, s2 = st.columns(2)
         s1.metric("Baseline projected 2033 value", fmt_money(baseline_2033))
         s2.metric("If the shock occurred just before 2033", fmt_money(pre2033_after_shock))
-        s3.metric("Capital above deterministic reserve", fmt_money(pre2033_after_shock - reserve))
-        st.caption("The reserve figure is the present value of ten beginning-of-year $50,000 payments using the reserve-yield assumption in Settings. This simplified version does not claim a Monte Carlo funding probability.")
+        st.caption("These are assumption-driven portfolio-value illustrations only. Liability, reserve PV, and funding-target analysis are shown in Tabs 9–10.")
 
 # ------------------------- TAB 8 -------------------------
 with tabs[7]:

@@ -99,10 +99,10 @@ def pct_input(label, decimal_value, min_percent=-100.0, max_percent=100.0,
     """Display a percentage input while returning its decimal form."""
     entered = st.number_input(
         label,
-        min_value=min_percent,
-        max_value=max_percent,
+        min_value=float(min_percent),
+        max_value=float(max_percent),
         value=float(decimal_value) * 100.0,
-        step=step_percent,
+        step=float(step_percent),
         format=format,
         key=key,
     )

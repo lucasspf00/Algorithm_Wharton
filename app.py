@@ -74,6 +74,51 @@ def fmt_money(x):
         return "Unavailable"
 
 
+PERCENT_METRIC_KEYS = {
+    "revenue_growth_1y", "revenue_growth_3y", "revenue_growth_5y",
+    "eps_growth_1y", "eps_growth_3y", "eps_growth_5y",
+    "fcf_growth_1y", "fcf_growth_3y", "fcf_growth_5y",
+    "net_income_growth_1y", "net_income_growth_3y", "net_income_growth_5y",
+    "operating_margin", "net_margin", "return_on_equity", "return_on_assets",
+    "dividend_yield", "distribution_yield", "annualized_volatility",
+    "max_drawdown", "downside_deviation", "expense_ratio",
+    "total_return_1y", "total_return_3y", "total_return_5y",
+}
+
+
+def format_metric_value(key, value):
+    if key in PERCENT_METRIC_KEYS:
+        return fmt_pct(value)
+    if key in {"current_price"}:
+        return fmt_money(value)
+    return fmt_num(value)
+
+
+def pct_input(label, decimal_value, min_percent=-100.0, max_percent=100.0,
+              step_percent=1.0, key=None, format="%.1f") -> float:
+    """Display a percentage input while returning its decimal form."""
+    entered = st.number_input(
+        label,
+        min_value=min_percent,
+        max_value=max_percent,
+        value=float(decimal_value) * 100.0,
+        step=step_percent,
+        format=format,
+        key=key,
+    )
+    return float(entered) / 100.0
+
+
+def format_metric_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    out = frame.copy()
+    for column in out.columns:
+        if column in {"Weight", "weight"}:
+            out[column] = out[column].map(fmt_pct)
+        elif column in {"Data Confidence", "data_confidence", "Sector Percentile", "sector_percentile"}:
+            out[column] = out[column].map(lambda x: fmt_pct(float(x) / 100.0))
+    return out
+
+
 def score_row(metrics: dict) -> dict:
     s = score_security(metrics, cfg)
     return {
@@ -194,7 +239,10 @@ with tabs[0]:
         st.dataframe(growth_table, hide_index=True, use_container_width=True)
 
         with st.expander("All raw metrics"):
-            raw = pd.DataFrame({"Metric": list(metrics.keys()), "Raw value": list(metrics.values())})
+            raw = pd.DataFrame({
+                "Metric": list(metrics.keys()),
+                "Raw value": [format_metric_value(k, v) for k, v in metrics.items()],
+            })
             st.dataframe(raw, hide_index=True, use_container_width=True)
         with st.expander("All normalized metric scores"):
             norm = pd.DataFrame({"Metric": list(scored["metric_scores"].keys()), "Score": list(scored["metric_scores"].values())})
@@ -225,7 +273,10 @@ with tabs[1]:
             ["Risk & resilience", scored["risk_score"]],
             ["Mapped rating", scored["display_rating"]],
         ], columns=["Category", "Score"]), hide_index=True, use_container_width=True)
-        st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame({
+            "Metric": list(metrics),
+            "Value": [format_metric_value(k, v) for k, v in metrics.items()],
+        }), hide_index=True, use_container_width=True)
 
 # ------------------------- TAB 3 -------------------------
 with tabs[2]:
@@ -260,7 +311,10 @@ with tabs[2]:
             st.dataframe(holdings.style.format({"weight": "{:.2%}"}), hide_index=True, use_container_width=True)
             st.download_button("Download ETF holdings CSV", holdings.to_csv(index=False).encode("utf-8"),
                                file_name=f"{metrics['ticker']}_holdings.csv", mime="text/csv", key="etf_holdings_download")
-        st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame({
+            "Metric": list(metrics),
+            "Value": [format_metric_value(k, v) for k, v in metrics.items()],
+        }), hide_index=True, use_container_width=True)
 
 # ------------------------- TAB 4 -------------------------
 with tabs[3]:
@@ -333,7 +387,11 @@ with tabs[3]:
                 "growth_score", "quality_score", "valuation_score", "risk_score",
                 "data_confidence", "sector_percentile"
             ]].copy()
-            st.dataframe(show.round(2), hide_index=True, use_container_width=True)
+            show = show.rename(columns={
+                "data_confidence": "Data Confidence",
+                "sector_percentile": "Sector Percentile",
+            })
+            st.dataframe(format_metric_frame(show), hide_index=True, use_container_width=True)
             st.download_button(
                 "Download ranking CSV",
                 show.to_csv(index=False).encode("utf-8"),
@@ -376,7 +434,10 @@ with tabs[4]:
 
     if not st.session_state.candidate_raw.empty:
         cols = ["ticker", "company", "sector", "asset_class", "fundamental_score", "display_rating", "risk_score", "data_confidence"]
-        st.dataframe(st.session_state.candidate_raw[cols].round(2), hide_index=True, use_container_width=True)
+        candidates = st.session_state.candidate_raw[cols].rename(columns={
+            "data_confidence": "Data Confidence",
+        })
+        st.dataframe(format_metric_frame(candidates), hide_index=True, use_container_width=True)
         st.write(f"Usable price series: {st.session_state.candidate_prices.shape[1]}")
     if st.session_state.candidate_errors:
         with st.expander("Candidate download errors"):
@@ -495,9 +556,9 @@ with tabs[6]:
 
         st.markdown("### Hypothetical shock")
         c1, c2, c3 = st.columns(3)
-        equity_shock = c1.number_input("Other equities shock", min_value=-0.90, max_value=0.50, value=float(cfg["stress"]["custom_equity_shock"]), step=0.05, format="%.2f", key="t9_equity")
-        tech_shock = c2.number_input("Technology shock", min_value=-0.90, max_value=0.50, value=float(cfg["stress"]["custom_tech_shock"]), step=0.05, format="%.2f", key="t9_tech")
-        fixed_shock = c3.number_input("Fixed-income shock", min_value=-0.50, max_value=0.50, value=float(cfg["stress"]["custom_fixed_income_shock"]), step=0.01, format="%.2f", key="t9_fixed")
+        equity_shock = pct_input("Other equities shock", cfg["stress"]["custom_equity_shock"], -90, 50, 5, "t9_equity")
+        tech_shock = pct_input("Technology shock", cfg["stress"]["custom_tech_shock"], -90, 50, 5, "t9_tech")
+        fixed_shock = pct_input("Fixed-income shock", cfg["stress"]["custom_fixed_income_shock"], -50, 50, 1, "t9_fixed")
 
         metadata = st.session_state.candidate_raw
         shocked = hypothetical_stress(weights, metadata, equity_shock, tech_shock, fixed_shock)
@@ -522,9 +583,9 @@ with tabs[7]:
 
     st.markdown("### Fundamental category weights")
     g1, g2, g3 = st.columns(3)
-    growth_w = g1.number_input("Growth weight", min_value=0.0, max_value=1.0, value=float(cfg["scoring"]["category_weights"]["growth"]), step=0.05, key="t10_growth_w")
-    quality_w = g2.number_input("Quality weight", min_value=0.0, max_value=1.0, value=float(cfg["scoring"]["category_weights"]["quality"]), step=0.05, key="t10_quality_w")
-    valuation_w = g3.number_input("Valuation weight", min_value=0.0, max_value=1.0, value=float(cfg["scoring"]["category_weights"]["valuation"]), step=0.05, key="t10_valuation_w")
+    growth_w = pct_input("Growth weight", cfg["scoring"]["category_weights"]["growth"], 0, 100, 5, "t10_growth_w")
+    quality_w = pct_input("Quality weight", cfg["scoring"]["category_weights"]["quality"], 0, 100, 5, "t10_quality_w")
+    valuation_w = pct_input("Valuation weight", cfg["scoring"]["category_weights"]["valuation"], 0, 100, 5, "t10_valuation_w")
 
     st.markdown("### Growth normalization caps")
     st.caption("Each cap maps +cap to +100, 0 to 0, and -cap to -100. Values beyond the cap stay at ±100.")
@@ -538,15 +599,17 @@ with tabs[7]:
     for i in range(0, len(rows), 3):
         cols = st.columns(3)
         for j, (label, key) in enumerate(rows[i:i+3]):
-            cap_inputs[key] = cols[j].number_input(label, min_value=0.05, max_value=1.50, value=float(caps[key]), step=0.05, format="%.2f", key=f"t10_cap_{key}")
+            cap_inputs[key] = pct_input(
+                label, caps[key], 5, 150, 5, f"t10_cap_{key}"
+            )
 
     st.markdown("### Portfolio and Laura assumptions")
     o1, o2, o3, o4 = st.columns(4)
-    max_weight = o1.number_input("Max holding weight", min_value=0.05, max_value=1.0, value=float(cfg["optimizer"]["max_weight"]), step=0.05, format="%.2f", key="t10_max_weight")
+    max_weight = pct_input("Max holding weight", cfg["optimizer"]["max_weight"], 5, 100, 5, "t10_max_weight")
     simulations = o2.number_input("Random portfolios", min_value=500, max_value=100000, value=int(cfg["optimizer"]["simulations"]), step=500, key="t10_sims")
-    risk_free = o3.number_input("Risk-free rate", min_value=-0.05, max_value=0.20, value=float(cfg["optimizer"]["risk_free_rate"]), step=0.005, format="%.3f", key="t10_rf")
+    risk_free = pct_input("Risk-free rate", cfg["optimizer"]["risk_free_rate"], -5, 20, 0.5, "t10_rf")
     lookback = o4.number_input("Price lookback (years)", min_value=1, max_value=10, value=int(cfg["optimizer"]["lookback_years"]), step=1, key="t10_lookback")
-    reserve_yield = st.number_input("2033 reserve yield assumption", min_value=0.0, max_value=0.15, value=float(cfg["laura"]["reserve_yield"]), step=0.005, format="%.3f", key="t10_reserve_yield")
+    reserve_yield = pct_input("2033 reserve yield assumption", cfg["laura"]["reserve_yield"], 0, 15, 0.5, "t10_reserve_yield")
 
     c_apply, c_reset = st.columns(2)
     if c_apply.button("Apply settings", key="t10_apply"):

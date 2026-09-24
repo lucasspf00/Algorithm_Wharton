@@ -456,8 +456,6 @@ with tabs[5]:
 
         result = st.session_state.optimizer_result
         if result:
-            # Discard legacy fourth-option results retained by an older session.
-            result["portfolios"].pop("Laura Portfolio", None)
             names = list(result["portfolios"].keys())
             selected = st.selectbox("Portfolio to use", names, index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0, key="t4_select")
             st.session_state.selected_portfolio = selected
@@ -483,6 +481,8 @@ with tabs[5]:
             st.markdown(f"**{selected} weights**")
             st.dataframe(weights_df.style.format({"Weight": "{:.2%}"}), hide_index=True, use_container_width=True)
             st.bar_chart(weights_df.set_index("Ticker"))
+            if selected == "Laura Portfolio":
+                st.caption("Laura Portfolio construction: 50% Maximum Sharpe + 50% Minimum Volatility. This is a model assumption, not a funding-confidence guarantee.")
 
             st.markdown("**Correlation matrix**")
             st.dataframe(result["correlation"].round(2), use_container_width=True)

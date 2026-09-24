@@ -142,14 +142,22 @@ def _price_risk(prices: pd.Series, beta: float) -> dict:
     return {"annualized_volatility": vol, "max_drawdown": max_dd, "downside_deviation": down_dev, "beta": beta}
 
 
-def _asset_class(info: dict) -> str:
+def _security_profile(ticker: str, info: dict) -> dict[str, str]:
+    """Classify a security before selecting metrics and scoring rules."""
     qt = str(info.get("quoteType", "")).upper()
-    text = " ".join(str(info.get(k, "")) for k in ["category", "longName", "shortName"]).lower()
+    text = " ".join(
+        str(info.get(k, ""))
+        for k in ["category", "fundFamily", "longName", "shortName", "industry", "sector"]
+    ).lower()
     if qt == "ETF":
         if any(x in text for x in ["bond", "treasury", "fixed income", "government"]):
-            return "fixed_income"
-        return "equity_etf"
-    return "stock"
+            return {"security_type": "ETF", "analysis_profile": "fixed_income_etf", "asset_class": "fixed_income"}
+        return {"security_type": "ETF", "analysis_profile": "equity_etf", "asset_class": "equity_etf"}
+    if ticker in {"BRK-A", "BRK-B"} or "berkshire hathaway" in text:
+        return {"security_type": "stock", "analysis_profile": "financial_conglomerate", "asset_class": "stock"}
+    if any(x in text for x in ["bank", "insurance", "financial services", "financial"]):
+        return {"security_type": "stock", "analysis_profile": "financial_company", "asset_class": "stock"}
+    return {"security_type": "stock", "analysis_profile": "operating_company", "asset_class": "stock"}
 
 
 def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tuple[dict, pd.Series]:
@@ -231,13 +239,14 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
     fpe = fpe if fpe > 0 else np.nan
     eve = eve if eve > 0 else np.nan
 
-    risk = _price_risk(close, _safe_num(info.get("beta")))
+    profile = _security_profile(ticker, info)
+    risk = _price_risk(close, _safe_num(info.get("beta") or info.get("beta3Year")))
     metrics = {
         "ticker": ticker,
         "company": info.get("longName") or info.get("shortName") or ticker,
         "sector": info.get("sector") or "Unknown",
         "industry": info.get("industry") or "Unknown",
-        "asset_class": _asset_class(info),
+        **profile,
         "current_price": float(close.iloc[-1]),
         "revenue": latest_rev,
         "net_income": latest_net,
@@ -261,6 +270,13 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "price_to_sales": ps,
         "price_to_book": pb,
         "ev_to_ebitda": eve,
+        # Fund-level fields are populated for ETFs where Yahoo provides them.
+        "expense_ratio": _safe_num(info.get("annualReportExpenseRatio") or info.get("netExpenseRatio")),
+        "total_assets": _safe_num(info.get("totalAssets")),
+        "holdings_count": _safe_num(info.get("numberOfHoldings")),
+        "portfolio_pe": _safe_num(info.get("trailingPE")),
+        "portfolio_pb": _safe_num(info.get("priceToBook")),
+        "distribution_yield": _safe_num(info.get("yield") or info.get("dividendYield")),
         "dividend_yield": _safe_num(info.get("dividendYield")),
         **risk,
     }

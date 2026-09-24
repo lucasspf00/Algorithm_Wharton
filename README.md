@@ -17,6 +17,7 @@ Tabs 5–8 from the larger model were removed. Laura-specific cash-flow context 
 
 - Metric/category scores: **-100 to +100**.
 - Secondary mapped company rating: **0 to 100**.
+- Security profiles now distinguish operating companies, equity ETFs, fixed-income ETFs, and financial conglomerates such as Berkshire Hathaway.
 - Fundamental structure: **30% Growth / 40% Quality / 30% Valuation** by default.
 - Risk is displayed separately so it is not double-counted inside the fundamental score and again inside portfolio risk.
 - Missing data is not converted to zero; available metrics are reweighted and Data Confidence is displayed.
@@ -82,6 +83,16 @@ Instead of separate Tabs 5–8, Tabs 4 and 9 calculate:
 - The effect of a hypothetical market shock immediately before 2033.
 
 This simplified version does **not** claim a Monte Carlo probability of funding success.
+
+## ETF and Berkshire analysis
+
+The analyzer does not force every ticker through the same corporate-statement model:
+
+- Equity ETFs use expense ratio, holdings count, portfolio P/E and P/B, distribution yield, and price risk.
+- Fixed-income ETFs use the same fund-level framework and are classified separately so the UI does not describe them as operating companies.
+- Berkshire Hathaway (`BRK-A`/`BRK-B`) uses a financial-conglomerate profile that emphasizes ROE, balance-sheet metrics, price-to-book, P/E, earnings growth, and risk.
+
+Yahoo Finance may not provide every fund or financial-company field. The application reports data confidence and reweights available metrics rather than treating ETF-inapplicable company fields as zero.
 
 ## Install and run on Mac
 

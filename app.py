@@ -84,6 +84,7 @@ def score_row(metrics: dict) -> dict:
         "display_rating": s["display_rating"],
         "risk_score": s["risk_score"],
         "data_confidence": s["data_confidence"],
+        "analysis_profile": s["analysis_profile"],
     }
 
 
@@ -135,7 +136,10 @@ with tabs[0]:
         c.metric("Risk & resilience", f"{scored['risk_score']:+.1f} / 100" if np.isfinite(scored["risk_score"]) else "Unavailable")
         d.metric("Data confidence", f"{scored['data_confidence']:.0f}%")
 
-        st.write(f"**{metrics['company']}** · {metrics['sector']} · {metrics['industry']} · `{metrics['asset_class']}`")
+        st.write(
+            f"**{metrics['company']}** · {metrics['sector']} · {metrics['industry']} · "
+            f"`{metrics['analysis_profile']}`"
+        )
         cats = pd.DataFrame([
             ["Growth", scored["growth_score"]],
             ["Quality / Financial Strength", scored["quality_score"]],

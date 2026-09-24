@@ -83,7 +83,45 @@ def _growth_branch(metrics: Mapping[str, float], prefix: str, cfg: dict) -> tupl
     return score, coverage, scores
 
 
-def score_security(metrics: Mapping[str, float], cfg: dict) -> dict:
+def _finish_score(metric_scores: dict, categories: Mapping[str, float], coverage: Mapping[str, float],
+                  risk_score: float, risk_cov: float, cfg: dict, profile: str) -> dict:
+    category_weights = cfg["scoring"]["category_weights"]
+    fundamental_score, _ = weighted_available(categories, category_weights)
+    display_rating = (fundamental_score + 100.0) / 2.0 if _finite(fundamental_score) else np.nan
+    category_cov = sum(
+        float(category_weights.get(k, 0.0)) * float(coverage.get(k, 0.0))
+        for k in categories
+    ) / sum(category_weights.values())
+    return {
+        "metric_scores": metric_scores,
+        "growth_score": categories.get("growth", np.nan),
+        "quality_score": categories.get("quality", np.nan),
+        "valuation_score": categories.get("valuation", np.nan),
+        "fundamental_score": fundamental_score,
+        "display_rating": display_rating,
+        "risk_score": risk_score,
+        "data_confidence": category_cov * 100.0,
+        "risk_data_coverage": risk_cov * 100.0,
+        "analysis_profile": profile,
+    }
+
+
+def _score_risk(metrics: Mapping[str, float]) -> tuple[dict, float, float]:
+    specs = {
+        "annualized_volatility": (0.10, 0.25, 0.55, False),
+        "max_drawdown": (0.10, 0.30, 0.65, False),
+        "downside_deviation": (0.07, 0.18, 0.40, False),
+        "beta": (0.50, 1.00, 1.80, False),
+    }
+    scores = {key: normalize_piecewise(metrics.get(key, np.nan), *spec) for key, spec in specs.items()}
+    score, coverage = weighted_available(scores, {
+        "annualized_volatility": 0.35, "max_drawdown": 0.35,
+        "downside_deviation": 0.20, "beta": 0.10,
+    })
+    return scores, score, coverage
+
+
+def _score_operating_company(metrics: Mapping[str, float], cfg: dict, profile: str = "operating_company") -> dict:
     metric_scores: dict[str, float] = {}
 
     rev, rev_cov, rev_scores = _growth_branch(metrics, "revenue", cfg)
@@ -129,36 +167,82 @@ def score_security(metrics: Mapping[str, float], cfg: dict) -> dict:
         metric_scores[key] = valuation_scores[key]
     valuation_score, valuation_cov = weighted_available(valuation_scores, cfg["scoring"]["valuation_weights"])
 
-    categories = {"growth": growth_score, "quality": quality_score, "valuation": valuation_score}
-    category_weights = cfg["scoring"]["category_weights"]
-    fundamental_score, _ = weighted_available(categories, category_weights)
-    display_rating = (fundamental_score + 100.0) / 2.0 if _finite(fundamental_score) else np.nan
-
-    risk_specs = {
-        "annualized_volatility": (0.10, 0.25, 0.55, False),
-        "max_drawdown": (0.10, 0.30, 0.65, False),
-        "downside_deviation": (0.07, 0.18, 0.40, False),
-        "beta": (0.50, 1.00, 1.80, False),
-    }
-    risk_scores = {}
-    for key, spec in risk_specs.items():
-        risk_scores[key] = normalize_piecewise(metrics.get(key, np.nan), *spec)
+    risk_scores, risk_score, risk_cov = _score_risk(metrics)
+    for key, value in risk_scores.items():
         metric_scores[f"risk::{key}"] = risk_scores[key]
-    risk_score, risk_cov = weighted_available(risk_scores, cfg["scoring"]["risk_weights"])
+    return _finish_score(
+        metric_scores,
+        {"growth": growth_score, "quality": quality_score, "valuation": valuation_score},
+        {"growth": growth_cov, "quality": quality_cov, "valuation": valuation_cov},
+        risk_score, risk_cov, cfg, profile,
+    )
 
-    cw = category_weights
-    data_confidence = (
-        cw["growth"] * growth_cov + cw["quality"] * quality_cov + cw["valuation"] * valuation_cov
-    ) / sum(cw.values())
 
-    return {
-        "metric_scores": metric_scores,
-        "growth_score": growth_score,
-        "quality_score": quality_score,
-        "valuation_score": valuation_score,
-        "fundamental_score": fundamental_score,
-        "display_rating": display_rating,
-        "risk_score": risk_score,
-        "data_confidence": data_confidence * 100.0,
-        "risk_data_coverage": risk_cov * 100.0,
+def _score_fund(metrics: Mapping[str, float], cfg: dict, profile: str) -> dict:
+    """Score an ETF from fund-level properties instead of company statements."""
+    metric_specs = {
+        "expense_ratio": (0.002, 0.008, 0.025, False),
+        "holdings_count": (10.0, 100.0, 500.0, True),
+        "portfolio_pe": (10.0, 22.0, 45.0, False),
+        "portfolio_pb": (1.0, 3.5, 8.0, False),
     }
+    metric_scores = {key: normalize_piecewise(metrics.get(key, np.nan), *spec)
+                     for key, spec in metric_specs.items()}
+    quality, quality_cov = weighted_available(
+        {"expense_ratio": metric_scores["expense_ratio"], "holdings_count": metric_scores["holdings_count"]},
+        {"expense_ratio": 0.60, "holdings_count": 0.40},
+    )
+    valuation, valuation_cov = weighted_available(
+        {"portfolio_pe": metric_scores["portfolio_pe"], "portfolio_pb": metric_scores["portfolio_pb"]},
+        {"portfolio_pe": 0.60, "portfolio_pb": 0.40},
+    )
+    risk_scores, risk_score, risk_cov = _score_risk(metrics)
+    metric_scores.update({f"risk::{key}": value for key, value in risk_scores.items()})
+    growth = normalize_symmetric(metrics.get("distribution_yield", np.nan), 0.06, True)
+    growth_cov = 1.0 if _finite(growth) else 0.0
+    return _finish_score(
+        metric_scores, {"growth": growth, "quality": quality, "valuation": valuation},
+        {"growth": growth_cov, "quality": quality_cov, "valuation": valuation_cov},
+        risk_score, risk_cov, cfg, profile,
+    )
+
+
+def _score_conglomerate(metrics: Mapping[str, float], cfg: dict) -> dict:
+    """Use book value, ROE, earnings growth, and balance-sheet metrics for Berkshire."""
+    result = _score_operating_company(metrics, cfg, "financial_conglomerate")
+    # Berkshire's book value and ROE are more informative than operating margin.
+    quality = weighted_available(
+        {
+            "return_on_equity": normalize_piecewise(metrics.get("return_on_equity", np.nan), 0.02, 0.10, 0.20, True),
+            "current_ratio": normalize_piecewise(metrics.get("current_ratio", np.nan), 0.50, 1.00, 2.00, True),
+            "debt_to_equity": normalize_piecewise(metrics.get("debt_to_equity", np.nan), 0.20, 1.00, 3.00, False),
+        },
+        {"return_on_equity": 0.45, "current_ratio": 0.20, "debt_to_equity": 0.35},
+    )
+    valuation = weighted_available(
+        {"price_to_book": normalize_piecewise(metrics.get("price_to_book", np.nan), 0.8, 1.5, 3.0, False),
+         "trailing_pe": normalize_piecewise(metrics.get("trailing_pe", np.nan), 10.0, 20.0, 40.0, False)},
+        {"price_to_book": 0.60, "trailing_pe": 0.40},
+    )
+    result["quality_score"] = quality[0]
+    result["valuation_score"] = valuation[0]
+    result["data_confidence"] = (
+        cfg["scoring"]["category_weights"]["growth"] * (1.0 if _finite(result["growth_score"]) else 0.0)
+        + cfg["scoring"]["category_weights"]["quality"] * quality[1]
+        + cfg["scoring"]["category_weights"]["valuation"] * valuation[1]
+    ) / sum(cfg["scoring"]["category_weights"].values()) * 100.0
+    result["fundamental_score"], _ = weighted_available(
+        {"growth": result["growth_score"], "quality": result["quality_score"], "valuation": result["valuation_score"]},
+        cfg["scoring"]["category_weights"],
+    )
+    result["display_rating"] = (result["fundamental_score"] + 100.0) / 2.0
+    return result
+
+
+def score_security(metrics: Mapping[str, float], cfg: dict) -> dict:
+    profile = metrics.get("analysis_profile", "operating_company")
+    if profile in {"equity_etf", "fixed_income_etf"}:
+        return _score_fund(metrics, cfg, profile)
+    if profile == "financial_conglomerate":
+        return _score_conglomerate(metrics, cfg)
+    return _score_operating_company(metrics, cfg, profile)

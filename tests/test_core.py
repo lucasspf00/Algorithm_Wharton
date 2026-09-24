@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.scoring import normalize_symmetric, score_security
 from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033
-from src.data import load_local_universe
+from src.data import load_local_universe, _security_profile
 from src.stress import hypothetical_stress
 
 cfg = load_config()
@@ -31,6 +31,28 @@ scored = score_security(metrics, cfg)
 assert -100 <= scored["fundamental_score"] <= 100
 assert 0 <= scored["display_rating"] <= 100
 assert scored["data_confidence"] > 90
+
+assert _security_profile("SPY", {"quoteType": "ETF", "category": "Large Blend"})["analysis_profile"] == "equity_etf"
+assert _security_profile("TLT", {"quoteType": "ETF", "category": "Intermediate Government"})["analysis_profile"] == "fixed_income_etf"
+assert _security_profile("BRK-B", {"quoteType": "EQUITY", "longName": "Berkshire Hathaway Inc."})["analysis_profile"] == "financial_conglomerate"
+
+etf_scored = score_security({
+    "analysis_profile": "equity_etf",
+    "expense_ratio": 0.0009, "holdings_count": 500, "portfolio_pe": 22, "portfolio_pb": 3.5,
+    "distribution_yield": 0.015, "annualized_volatility": 0.18, "max_drawdown": 0.25,
+    "downside_deviation": 0.12, "beta": 1.0,
+}, cfg)
+assert etf_scored["analysis_profile"] == "equity_etf"
+assert etf_scored["data_confidence"] > 80
+
+brk_scored = score_security({
+    "analysis_profile": "financial_conglomerate", "revenue_growth_1y": 0.05,
+    "return_on_equity": 0.12, "current_ratio": 1.2, "debt_to_equity": 0.8,
+    "price_to_book": 1.6, "trailing_pe": 22, "annualized_volatility": 0.18,
+    "max_drawdown": 0.25, "downside_deviation": 0.12, "beta": 0.9,
+}, cfg)
+assert brk_scored["analysis_profile"] == "financial_conglomerate"
+assert np.isfinite(brk_scored["fundamental_score"])
 
 rng = np.random.default_rng(1)
 w = _bounded_weights(8, 0.20, rng)

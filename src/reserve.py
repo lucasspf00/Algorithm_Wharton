@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+from typing import Iterable
+import numpy as np
+import pandas as pd
+
+
+LIABILITY = 500_000.0
+PAYMENT = 50_000.0
+PAYMENT_COUNT = 10
+PAYMENT_YEARS = tuple(range(2033, 2043))
+TARGETS = (0.95, 0.99, 0.995, 0.999)
+
+
+def normalize_reserve_weights(assets: pd.DataFrame) -> pd.DataFrame:
+    """Validate and normalize selected reserve-asset weights."""
+    out = assets.copy()
+    out["weight"] = pd.to_numeric(out["weight"], errors="coerce")
+    out = out.loc[out["weight"].notna() & (out["weight"] >= 0)].copy()
+    total = float(out["weight"].sum())
+    if out.empty or total <= 0:
+        raise ValueError("Assign a positive weight to at least one reserve asset.")
+    out["weight"] = out["weight"] / total
+    return out
+
+
+def weighted_reserve_yield(assets: pd.DataFrame) -> float:
+    """Weighted yield estimate; unavailable when any selected yield is missing."""
+    out = normalize_reserve_weights(assets)
+    yields = pd.to_numeric(out["yield"], errors="coerce")
+    if yields.isna().any():
+        raise ValueError("Enter a yield for every selected reserve asset; missing yields are not fabricated.")
+    return float((out["weight"] * yields).sum())
+
+
+def deterministic_reserve_pv(
+    reserve_yield: float,
+    payment: float = PAYMENT,
+    count: int = PAYMENT_COUNT,
+) -> float:
+    if reserve_yield <= -1:
+        raise ValueError("Reserve yield must be greater than -100%.")
+    return float(sum(payment / ((1 + reserve_yield) ** t) for t in range(count)))
+
+
+def simulate_reserve_paths(
+    starting_reserve: float,
+    reserve_yield: float,
+    volatility: float,
+    simulations: int = 100_000,
+    seed: int = 20260924,
+    payment: float = PAYMENT,
+    count: int = PAYMENT_COUNT,
+) -> np.ndarray:
+    """Simulate annual reserve paths with beginning-of-year withdrawals."""
+    if simulations < 100_000:
+        raise ValueError("Final reserve analysis requires at least 100,000 simulations.")
+    if starting_reserve < 0 or volatility < 0:
+        raise ValueError("Starting reserve and volatility must be non-negative.")
+    rng = np.random.default_rng(seed)
+    values = np.full(simulations, float(starting_reserve))
+    for year in range(count):
+        values -= payment
+        if year < count - 1:
+            shocks = rng.normal(reserve_yield - 0.5 * volatility**2, volatility, simulations)
+            values = np.where(values > 0, values * np.exp(shocks), 0.0)
+    return values
+
+
+def funding_success_probability(
+    starting_reserve: float,
+    reserve_yield: float,
+    volatility: float,
+    simulations: int = 100_000,
+    seed: int = 20260924,
+) -> float:
+    ending = simulate_reserve_paths(
+        starting_reserve, reserve_yield, volatility, simulations, seed
+    )
+    return float(np.mean(ending >= 0))
+
+
+def required_reserves(
+    reserve_yield: float,
+    volatility: float,
+    targets: Iterable[float] = TARGETS,
+    simulations: int = 100_000,
+    seed: int = 20260924,
+) -> pd.DataFrame:
+    """Find minimum starting reserves by deterministic bisection on simulations."""
+    rows = []
+    upper = deterministic_reserve_pv(reserve_yield) + LIABILITY
+    for target in targets:
+        lo, hi = 0.0, upper
+        for _ in range(45):
+            mid = (lo + hi) / 2
+            success = funding_success_probability(mid, reserve_yield, volatility, simulations, seed)
+            if success >= target:
+                hi = mid
+            else:
+                lo = mid
+        success = funding_success_probability(hi, reserve_yield, volatility, simulations, seed)
+        rows.append({
+            "funding_target": target,
+            "failure_rate": 1.0 - target,
+            "required_reserve": hi,
+            "simulated_success": success,
+        })
+    return pd.DataFrame(rows)

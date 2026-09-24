@@ -11,6 +11,11 @@ from src.scoring import normalize_symmetric, score_security
 from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033
 from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type
 from src.stress import hypothetical_stress
+from src.reserve import (
+    deterministic_reserve_pv,
+    normalize_reserve_weights,
+    required_reserves,
+)
 
 cfg = load_config()
 
@@ -83,6 +88,15 @@ assert w.max() <= 0.2000001
 reserve = deterministic_reserve_requirement(50000, 10, 0.04)
 assert 400000 < reserve < 500000
 assert laura_value_2033(0.0) == 450000
+reserve_assets = pd.DataFrame([
+    {"asset": "SGOV", "weight": 0.5, "yield": 0.04},
+    {"asset": "BIL", "weight": 0.5, "yield": 0.04},
+])
+assert np.isclose(normalize_reserve_weights(reserve_assets)["weight"].sum(), 1.0)
+assert np.isclose(deterministic_reserve_pv(0.04), reserve)
+reserve_results = required_reserves(0.04, 0.05, targets=(0.95,), simulations=100000, seed=7)
+assert reserve_results.loc[0, "required_reserve"] >= 0
+assert reserve_results.loc[0, "simulated_success"] >= 0.95
 
 u = load_local_universe()
 assert {"ticker", "company", "sector"}.issubset(u.columns)

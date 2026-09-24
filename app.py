@@ -29,6 +29,16 @@ from src.optimizer import (
     deterministic_reserve_requirement,
 )
 from src.stress import HISTORICAL_WINDOWS, historical_portfolio_stress, hypothetical_stress
+from src.reserve import (
+    LIABILITY,
+    PAYMENT,
+    PAYMENT_COUNT,
+    TARGETS,
+    deterministic_reserve_pv,
+    normalize_reserve_weights,
+    required_reserves,
+    weighted_reserve_yield,
+)
 
 st.set_page_config(page_title="Laura Gao Quant System — Simplified", layout="wide")
 
@@ -46,6 +56,12 @@ if "optimizer_result" not in st.session_state:
     st.session_state.optimizer_result = None
 if "selected_portfolio" not in st.session_state:
     st.session_state.selected_portfolio = "Maximum Sharpe"
+if "reserve_assets" not in st.session_state:
+    st.session_state.reserve_assets = pd.DataFrame([
+        {"asset": "SGOV", "asset_type": "Treasury ETF", "weight": 0.40, "yield": np.nan, "duration": np.nan, "maturity": np.nan, "volatility": np.nan, "drawdown": np.nan, "liquidity": np.nan},
+        {"asset": "BIL", "asset_type": "Treasury ETF", "weight": 0.30, "yield": np.nan, "duration": np.nan, "maturity": np.nan, "volatility": np.nan, "drawdown": np.nan, "liquidity": np.nan},
+        {"asset": "SHY", "asset_type": "Treasury ETF", "weight": 0.30, "yield": np.nan, "duration": np.nan, "maturity": np.nan, "volatility": np.nan, "drawdown": np.nan, "liquidity": np.nan},
+    ])
 
 cfg = st.session_state.cfg
 
@@ -186,6 +202,8 @@ tabs = st.tabs([
     "6 Portfolio Optimizer",
     "7 Stress Test",
     "8 Settings",
+    "9 Operating Reserve Assets",
+    "10 Reserve Optimizer",
 ])
 
 # ------------------------- TAB 1 -------------------------
@@ -653,3 +671,73 @@ with tabs[7]:
 - **Operating reserve PV:** `Σ 50,000/(1+y)^t`, for `t = 0...9` because the first payment occurs at the beginning of 2033.
         """
     )
+
+# ------------------------- TAB 9 -------------------------
+with tabs[8]:
+    st.subheader("Operating Reserve Assets")
+    st.caption("Enter observable reserve-asset data. Blank yield, duration, maturity, volatility, drawdown, or liquidity values remain unavailable and are never fabricated.")
+    reserve_assets = st.data_editor(
+        st.session_state.reserve_assets,
+        num_rows="dynamic",
+        hide_index=True,
+        use_container_width=True,
+        column_config={
+            "weight": st.column_config.NumberColumn("Weight", min_value=0.0, max_value=1.0, format="%.1%"),
+            "yield": st.column_config.NumberColumn("Yield estimate", format="%.2%"),
+            "duration": st.column_config.NumberColumn("Duration (years)", format="%.2f"),
+            "maturity": st.column_config.NumberColumn("Maturity (years)", format="%.2f"),
+            "volatility": st.column_config.NumberColumn("Volatility", format="%.1%"),
+            "drawdown": st.column_config.NumberColumn("Max drawdown", format="%.1%"),
+            "liquidity": st.column_config.NumberColumn("Liquidity ($/day)", format="$%,.0f"),
+        },
+        key="t9_reserve_editor",
+    )
+    st.session_state.reserve_assets = reserve_assets
+    try:
+        normalized = normalize_reserve_weights(reserve_assets)
+        st.dataframe(normalized.assign(weight=normalized["weight"].map(fmt_pct)), hide_index=True, use_container_width=True)
+        weighted_yield = weighted_reserve_yield(normalized)
+        st.metric("Weighted reserve yield estimate", fmt_pct(weighted_yield))
+        st.caption("This weighted yield is a model estimate based on the entered asset yields; it is not guaranteed.")
+    except ValueError as exc:
+        st.warning(str(exc))
+
+# ------------------------- TAB 10 -------------------------
+with tabs[9]:
+    st.subheader("Reserve Optimizer")
+    st.info("Laura's fixed nominal liability is $500,000: 10 × $50,000 beginning-of-year payments from 2033 through 2042.")
+    st.write(f"**Nominal liability:** {fmt_money(LIABILITY)} = {PAYMENT_COUNT} × {fmt_money(PAYMENT)}")
+    target = st.selectbox(
+        "Recommended funding-success target",
+        TARGETS,
+        index=2,
+        format_func=lambda x: fmt_pct(x),
+        key="t10_reserve_target",
+    )
+    simulations = 100_000
+    seed = st.number_input("Reproducible simulation seed", min_value=1, value=20260924, step=1, key="t10_reserve_seed")
+    try:
+        normalized = normalize_reserve_weights(st.session_state.reserve_assets)
+        reserve_yield = weighted_reserve_yield(normalized)
+        vol_values = pd.to_numeric(normalized["volatility"], errors="coerce")
+        if vol_values.isna().any():
+            raise ValueError("Enter volatility for every selected reserve asset before running simulations.")
+        portfolio_volatility = float(np.sqrt((normalized["weight"] * vol_values.pow(2)).sum()))
+        deterministic_pv = deterministic_reserve_pv(reserve_yield)
+        results = required_reserves(reserve_yield, portfolio_volatility, TARGETS, simulations, int(seed))
+        st.metric("Weighted reserve yield estimate", fmt_pct(reserve_yield))
+        st.metric("Deterministic PV of payments", fmt_money(deterministic_pv))
+        st.caption("The deterministic PV uses the weighted yield estimate and beginning-of-year timing. It is not a guaranteed return.")
+        display = results.copy()
+        display["Funding target"] = display["funding_target"].map(fmt_pct)
+        display["Failure rate"] = display["failure_rate"].map(fmt_pct)
+        display["Required reserve"] = display["required_reserve"].map(fmt_money)
+        display["Simulated success"] = display["simulated_success"].map(fmt_pct)
+        st.dataframe(display[["Funding target", "Failure rate", "Required reserve", "Simulated success"]], hide_index=True, use_container_width=True)
+        selected_required = float(results.loc[np.isclose(results["funding_target"], target), "required_reserve"].iloc[0])
+        capital = float(cfg["laura"]["contribution_2027"] + cfg["laura"]["contribution_2028"])
+        st.metric(f"Reserve surplus/shortfall at {fmt_pct(target)} target", fmt_money(capital - selected_required))
+        st.metric("Capital remaining above selected reserve", fmt_money(capital - selected_required))
+        st.caption(f"Recommended default: {fmt_pct(0.995)} success, equivalent to a {fmt_pct(0.005)} failure rate. Simulations: {simulations:,}; seed: {int(seed)}.")
+    except ValueError as exc:
+        st.warning(str(exc))

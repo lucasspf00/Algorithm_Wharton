@@ -72,6 +72,13 @@ laura:
   max_holding_weight: 0.20
   minimum_holding_weight: 0.00
   wins_results_included_in_long_term_projection: false
+  reserve_simulations: 100000
+  reserve_simulation_seed: 20260924
+  reserve_funding_targets:
+    - 0.95
+    - 0.99
+    - 0.995
+    - 0.999
 
 stress:
   custom_equity_shock: -0.30

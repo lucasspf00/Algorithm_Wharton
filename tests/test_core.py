@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.scoring import normalize_symmetric, score_security
 from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033
-from src.data import load_local_universe, _security_profile
+from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type
 from src.stress import hypothetical_stress
 
 cfg = load_config()
@@ -35,9 +35,12 @@ assert scored["data_confidence"] > 90
 assert _security_profile("SPY", {"quoteType": "ETF", "category": "Large Blend"})["analysis_profile"] == "equity_etf"
 assert _security_profile("TLT", {"quoteType": "ETF", "category": "Intermediate Government"})["analysis_profile"] == "fixed_income_etf"
 assert _security_profile("BRK-B", {"quoteType": "EQUITY", "longName": "Berkshire Hathaway Inc."})["analysis_profile"] == "financial_conglomerate"
+assert normalize_ticker("BRK.B") == "BRK-B"
+assert detect_asset_type("JPM", {"quoteType": "EQUITY", "sector": "Financial Services"}) == "financial_stock"
 
 etf_scored = score_security({
     "analysis_profile": "equity_etf",
+    "total_return_1y": 0.12, "total_return_3y": 0.10, "total_return_5y": 0.09,
     "expense_ratio": 0.0009, "holdings_count": 500, "portfolio_pe": 22, "portfolio_pb": 3.5,
     "distribution_yield": 0.015, "annualized_volatility": 0.18, "max_drawdown": 0.25,
     "downside_deviation": 0.12, "beta": 1.0,
@@ -51,8 +54,26 @@ brk_scored = score_security({
     "price_to_book": 1.6, "trailing_pe": 22, "annualized_volatility": 0.18,
     "max_drawdown": 0.25, "downside_deviation": 0.12, "beta": 0.9,
 }, cfg)
-assert brk_scored["analysis_profile"] == "financial_conglomerate"
+assert brk_scored["analysis_profile"] == "financial_stock"
 assert np.isfinite(brk_scored["fundamental_score"])
+
+financial_scored = score_security({
+    "analysis_profile": "financial_company",
+    "revenue_growth_1y": .05, "eps_growth_1y": .08, "net_income_growth_1y": .06,
+    "return_on_equity": .12, "return_on_assets": .01, "net_margin": .20,
+    "earnings_consistency": .90, "trailing_pe": 15, "forward_pe": 14,
+    "price_to_book": 1.5, "earnings_yield": 1 / 15,
+    "annualized_volatility": .20, "max_drawdown": .30, "downside_deviation": .14, "beta": 1.0,
+}, cfg)
+assert financial_scored["analysis_profile"] == "financial_stock"
+
+fixed_scored = score_security({
+    "analysis_profile": "fixed_income_etf", "total_return_1y": .04,
+    "total_return_3y": .02, "total_return_5y": .03, "expense_ratio": .0015,
+    "holdings_count": 500, "annualized_volatility": .06, "max_drawdown": .08,
+    "downside_deviation": .04, "beta": .1,
+}, cfg)
+assert fixed_scored["analysis_profile"] == "fixed_income_etf"
 
 rng = np.random.default_rng(1)
 w = _bounded_weights(8, 0.20, rng)

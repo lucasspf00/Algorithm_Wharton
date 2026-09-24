@@ -92,7 +92,9 @@ The analyzer does not force every ticker through the same corporate-statement mo
 
 - Equity ETFs use expense ratio, holdings count, portfolio P/E and P/B, distribution yield, and price risk.
 - Fixed-income ETFs use the same fund-level framework and are classified separately so the UI does not describe them as operating companies.
-- Berkshire Hathaway (`BRK-A`/`BRK-B`) uses a financial-conglomerate profile that emphasizes ROE, balance-sheet metrics, price-to-book, P/E, earnings growth, and risk.
+- Equity ETF returns now use adjusted-price 1-year, 3-year, and 5-year annualized history.
+- Fixed-income ETFs use narrower return caps and emphasize stability/risk.
+- Financial companies, including Berkshire Hathaway (`BRK-A`/`BRK-B`), use a financial-stock profile emphasizing ROE, ROA, earnings consistency, price-to-book, P/E, earnings growth, and risk.
 
 Yahoo Finance may not provide every fund or financial-company field. The application reports data confidence and reweights available metrics rather than treating ETF-inapplicable company fields as zero.
 

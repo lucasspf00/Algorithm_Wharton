@@ -24,6 +24,9 @@ scoring:
     fcf_growth_1y: 0.50
     fcf_growth_3y: 0.40
     fcf_growth_5y: 0.35
+    net_income_growth_1y: 0.50
+    net_income_growth_3y: 0.35
+    net_income_growth_5y: 0.30
 
   quality_weights:
     operating_margin: 0.25

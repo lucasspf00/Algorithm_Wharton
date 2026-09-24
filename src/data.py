@@ -27,6 +27,22 @@ class DataError(RuntimeError):
     pass
 
 
+def normalize_ticker(ticker: str) -> str:
+    """Normalize user tickers to Yahoo Finance symbols."""
+    return str(ticker).strip().upper().replace(".", "-")
+
+
+def detect_asset_type(ticker: str, info: dict) -> str:
+    profile = _security_profile(normalize_ticker(ticker), info)["analysis_profile"]
+    return {
+        "operating_company": "standard_stock",
+        "financial_company": "financial_stock",
+        "financial_conglomerate": "financial_stock",
+        "equity_etf": "equity_etf",
+        "fixed_income_etf": "fixed_income_etf",
+    }.get(profile, "standard_stock")
+
+
 def load_local_universe() -> pd.DataFrame:
     """Load the bundled universe. No web request is made here, so no SSL error is possible."""
     df = pd.read_csv(UNIVERSE_PATH)
@@ -162,7 +178,7 @@ def _security_profile(ticker: str, info: dict) -> dict[str, str]:
 
 def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tuple[dict, pd.Series]:
     _need_yfinance()
-    ticker = ticker.strip().upper().replace(".", "-")
+    ticker = normalize_ticker(ticker)
     cache_dir = cfg["data"]["cache_dir"]
     ttl = float(cfg["data"]["cache_ttl_hours"])
     key = f"security::{ticker}"
@@ -200,6 +216,16 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
     if hist is None or hist.empty:
         raise DataError(f"No usable price history returned for {ticker}.")
     close = pd.to_numeric(hist["Close"], errors="coerce").dropna().rename(ticker)
+
+    def historical_return(years: int) -> float:
+        if len(close) < 2:
+            return np.nan
+        cutoff = close.index[-1] - pd.DateOffset(years=years)
+        earlier = close.loc[close.index <= cutoff]
+        if earlier.empty or earlier.iloc[0] <= 0:
+            return np.nan
+        elapsed = (close.index[-1] - earlier.index[-1]).days / 365.25
+        return float((close.iloc[-1] / earlier.iloc[0]) ** (1 / elapsed) - 1) if elapsed > 0 else np.nan
 
     revenue = _statement_row(income, ["Total Revenue", "Operating Revenue"])
     net_income = _statement_row(income, ["Net Income", "Net Income Common Stockholders"])
@@ -250,6 +276,9 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "current_price": float(close.iloc[-1]),
         "revenue": latest_rev,
         "net_income": latest_net,
+        "net_income_growth_1y": _growth_1y(net_income),
+        "net_income_growth_3y": _cagr(net_income, 3),
+        "net_income_growth_5y": _cagr(net_income, 5),
         "free_cash_flow": latest_fcf,
         "revenue_growth_1y": _growth_1y(revenue),
         "revenue_growth_3y": _cagr(revenue, 3),
@@ -260,9 +289,17 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "fcf_growth_1y": _growth_1y(fcf),
         "fcf_growth_3y": _cagr(fcf, 3),
         "fcf_growth_5y": _cagr(fcf, 5),
+        "total_return_1y": historical_return(1),
+        "total_return_3y": historical_return(3),
+        "total_return_5y": historical_return(5),
         "operating_margin": op_margin,
         "net_margin": net_margin,
         "return_on_equity": _safe_num(info.get("returnOnEquity")),
+        "return_on_assets": _safe_num(info.get("returnOnAssets")),
+        "earnings_consistency": (
+            float((net_income > 0).mean()) if len(net_income) >= 3 else np.nan
+        ),
+        "earnings_yield": (1 / pe) if np.isfinite(pe) and pe > 0 else np.nan,
         "current_ratio": _safe_num(info.get("currentRatio")),
         "debt_to_equity": de,
         "trailing_pe": pe,
@@ -340,7 +377,7 @@ def etf_holdings(ticker: str, cfg: dict, force_refresh: bool = False) -> pd.Data
 
 def batch_analyze(tickers: Iterable[str], cfg: dict) -> tuple[pd.DataFrame, dict[str, pd.Series], dict[str, str]]:
     rows, prices, errors = [], {}, {}
-    for ticker in list(dict.fromkeys(str(t).strip().upper() for t in tickers if str(t).strip())):
+    for ticker in list(dict.fromkeys(normalize_ticker(t) for t in tickers if str(t).strip())):
         try:
             m, p = analyze_security(ticker, cfg)
             rows.append(m)
@@ -358,7 +395,7 @@ def price_frame(price_map: dict[str, pd.Series]) -> pd.DataFrame:
 
 def download_price_period(tickers: list[str], start: str, end: str) -> pd.DataFrame:
     _need_yfinance()
-    clean = [t.strip().upper().replace(".", "-") for t in tickers if t.strip()]
+    clean = [normalize_ticker(t) for t in tickers if t.strip()]
     if not clean:
         return pd.DataFrame()
     try:

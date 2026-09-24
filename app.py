@@ -660,23 +660,31 @@ with tabs[7]:
 # ------------------------- TAB 9 -------------------------
 with tabs[8]:
     st.subheader("Operating Reserve Assets")
-    st.caption("Enter observable reserve-asset data. Blank yield, duration, maturity, volatility, drawdown, or liquidity values remain unavailable and are never fabricated.")
+    st.caption(
+        "Enter percentages directly (for example, type 4 for a 4% yield and 40 for a 40% weight). "
+        "Blank yield, duration, maturity, volatility, drawdown, or liquidity values remain unavailable and are never fabricated."
+    )
+    reserve_editor = st.session_state.reserve_assets.copy()
+    for column in ("weight", "yield", "volatility", "drawdown"):
+        reserve_editor[column] = pd.to_numeric(reserve_editor[column], errors="coerce") * 100.0
     reserve_assets = st.data_editor(
-        st.session_state.reserve_assets,
+        reserve_editor,
         num_rows="dynamic",
         hide_index=True,
         use_container_width=True,
         column_config={
-            "weight": st.column_config.NumberColumn("Weight", min_value=0.0, max_value=1.0, format="%.1%"),
-            "yield": st.column_config.NumberColumn("Yield estimate", format="%.2%"),
+            "weight": st.column_config.NumberColumn("Weight (%)", min_value=0.0, max_value=100.0, format="%.1f"),
+            "yield": st.column_config.NumberColumn("Yield estimate (%)", min_value=-100.0, max_value=100.0, format="%.2f"),
             "duration": st.column_config.NumberColumn("Duration (years)", format="%.2f"),
             "maturity": st.column_config.NumberColumn("Maturity (years)", format="%.2f"),
-            "volatility": st.column_config.NumberColumn("Volatility", format="%.1%"),
-            "drawdown": st.column_config.NumberColumn("Max drawdown", format="%.1%"),
+            "volatility": st.column_config.NumberColumn("Volatility (%)", min_value=0.0, max_value=100.0, format="%.1f"),
+            "drawdown": st.column_config.NumberColumn("Max drawdown (%)", min_value=-100.0, max_value=100.0, format="%.1f"),
             "liquidity": st.column_config.NumberColumn("Liquidity ($/day)", format="$%,.0f"),
         },
         key="t9_reserve_editor",
     )
+    for column in ("weight", "yield", "volatility", "drawdown"):
+        reserve_assets[column] = pd.to_numeric(reserve_assets[column], errors="coerce") / 100.0
     st.session_state.reserve_assets = reserve_assets
     try:
         normalized = normalize_reserve_weights(reserve_assets)

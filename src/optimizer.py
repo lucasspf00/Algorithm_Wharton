@@ -75,6 +75,7 @@ def portfolio_stats(weights: np.ndarray, mu: np.ndarray, cov: np.ndarray, risk_f
 
 def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
     settings = cfg["optimizer"]
+    laura_settings = cfg.get("laura", {})
     returns = prepare_returns(price_df, int(settings["lookback_years"]))
     if returns.shape[0] < 126:
         raise ValueError("Not enough overlapping price history for optimization. Try different holdings or a shorter lookback.")
@@ -117,14 +118,24 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
 
     # Laura Portfolio balances the preferred Maximum Sharpe portfolio with
     # Minimum Volatility while preserving long-only, fully invested weights.
-    laura_w = (W[max_sharpe_i] * 0.50) + (W[min_vol_i] * 0.50)
+    sharpe_blend = float(laura_settings.get("portfolio_blend", {}).get("maximum_sharpe", 0.50))
+    min_vol_blend = float(laura_settings.get("portfolio_blend", {}).get("minimum_volatility", 0.50))
+    blend_total = sharpe_blend + min_vol_blend
+    if blend_total <= 0:
+        raise ValueError("Laura Portfolio blend weights must have a positive total.")
+    sharpe_blend /= blend_total
+    min_vol_blend /= blend_total
+    laura_w = (W[max_sharpe_i] * sharpe_blend) + (W[min_vol_i] * min_vol_blend)
     laura_ret, laura_vol, laura_sharpe = portfolio_stats(laura_w, mu, cov, rf)
     laura_portfolio = {
         "weights": pd.Series(laura_w, index=tickers),
         "expected_return": laura_ret,
         "volatility": laura_vol,
         "sharpe": laura_sharpe,
-        "construction": "50% Maximum Sharpe + 50% Minimum Volatility",
+        "construction": (
+            f"{sharpe_blend:.1%} Maximum Sharpe + "
+            f"{min_vol_blend:.1%} Minimum Volatility"
+        ),
     }
 
     return {

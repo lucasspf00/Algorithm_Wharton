@@ -139,6 +139,15 @@ for p in opt["portfolios"].values():
     assert np.isclose(p["weights"].sum(), 1.0)
     assert p["weights"].max() <= 0.2000001
 
+custom_cfg = load_config()
+custom_cfg["optimizer"]["simulations"] = 500
+custom_cfg["laura"]["portfolio_blend"] = {
+    "maximum_sharpe": 0.75,
+    "minimum_volatility": 0.25,
+}
+custom_opt = monte_carlo_optimize(synthetic, custom_cfg)
+assert custom_opt["portfolios"]["Laura Portfolio"]["construction"] == "75.0% Maximum Sharpe + 25.0% Minimum Volatility"
+
 hist = historical_portfolio_stress(synthetic.iloc[:120], opt["portfolios"]["Maximum Sharpe"]["weights"])
 assert hist["available"]
 assert 0 < hist["weight_coverage"] <= 1

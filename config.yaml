@@ -63,7 +63,7 @@ laura:
   annual_payment: 50000
   payment_count: 10
   reserve_yield: 0.04
-  funding_confidence_target: 0.95
+  funding_confidence_target: 0.995
   preferred_current_portfolio_reference: maximum_sharpe
   portfolio_blend:
     maximum_sharpe: 0.50

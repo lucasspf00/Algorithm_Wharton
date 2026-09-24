@@ -12,8 +12,10 @@ This version intentionally simplifies the earlier project while preserving the m
 6. Portfolio Optimizer
 7. Stress Test
 8. Settings
+9. Operating Reserve Assets
+10. Reserve Optimizer
 
-Tabs 5–8 from the larger model were removed. Laura-specific cash-flow context is kept as a simpler 2033 funding lens inside Tabs 4 and 9.
+The reserve tabs are separate from the competition-oriented portfolio optimizer. Laura's cash-flow assumptions are model-specific planning inputs, not Wharton competition rules.
 
 ## Main scoring design
 
@@ -50,7 +52,7 @@ This version does **not** use the internet to load the default ranking universe.
 
 The actual stock fundamentals/prices still come from `yfinance` and require internet access. The application sets Python's CA bundle to `certifi` automatically to reduce macOS certificate problems.
 
-The bundled universe is a screening helper, not a representation of the exact WInS eligible list. Tab 2 also supports an uploaded CSV with a `ticker` column and optional `sector` column.
+The bundled universe is a screening helper, not a representation of the exact WInS eligible list. Tab 2 also supports an uploaded CSV with a `ticker` column and optional `sector` column. Teams must use the official WInS universe and registered-team instructions for competition submissions.
 
 ## Simpler optimizer
 
@@ -69,7 +71,7 @@ If the constraint is impossible — e.g. 5 stocks with a 15% maximum weight — 
 
 Expected returns are historical geometric/log-return estimates. Covariance uses a transparent diagonal shrinkage parameter. These are model assumptions, not forecasts.
 
-## Laura-specific simplified lens
+## Laura-specific planning lens
 
 The application retains Laura's supplied competition cash-flow facts:
 
@@ -77,14 +79,7 @@ The application retains Laura's supplied competition cash-flow facts:
 - Beginning 2028: +$150,000
 - Beginning 2033 through beginning 2042: ten $50,000 operating payments
 
-Instead of separate Tabs 5–8, Tabs 4 and 9 calculate:
-
-- An expected-value 2033 portfolio projection using the selected portfolio's historical return estimate.
-- The deterministic present value of ten $50,000 beginning-of-year payments using a configurable reserve yield.
-- Capital above that deterministic reserve.
-- The effect of a hypothetical market shock immediately before 2033.
-
-This simplified version does **not** claim a Monte Carlo probability of funding success.
+The Portfolio Optimizer shows an assumption-driven 2033 distribution using the 2027 and 2028 starting cash flows. The Operating Reserve Assets and Reserve Optimizer tabs separately calculate the deterministic present value and simulated funding requirements for the ten payments. These are Laura-specific planning tools and are not competition deliverables or official Wharton requirements.
 
 ## ETF and Berkshire analysis
 
@@ -131,4 +126,6 @@ These tests do not need live financial-data downloads.
 - The optimizer is a Monte Carlo search approximation, not a proof of a global mathematical optimum.
 - Historical stress tests cannot create history for securities that did not exist. Weight coverage is reported and available holdings are renormalized.
 - The bundled universe is not the official WInS eligibility list.
-- The 2033 deterministic lens is not a substitute for the more advanced probability-based funding analysis that could be used in a final competition report.
+- The 2033 projections and reserve analysis are not substitutes for the official IPS, Trading Notes Analysis, Comprehensive Final Report, or registered-team competition instructions.
+- Wharton states that teams are evaluated on strategy quality, client alignment, research, analysis, and communication; portfolio performance alone does not determine success.
+- Generative AI may support brainstorming, but AI-generated material must not be submitted as a student's own work and must be cited when included.

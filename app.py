@@ -33,7 +33,6 @@ from src.reserve import (
     LIABILITY,
     PAYMENT,
     PAYMENT_COUNT,
-    TARGETS,
     deterministic_reserve_pv,
     normalize_reserve_weights,
     required_reserves,
@@ -99,6 +98,7 @@ PERCENT_METRIC_KEYS = {
     "dividend_yield", "distribution_yield", "annualized_volatility",
     "max_drawdown", "downside_deviation", "expense_ratio",
     "total_return_1y", "total_return_3y", "total_return_5y",
+    "return_on_invested_capital", "earnings_yield", "earnings_consistency",
 }
 
 
@@ -161,11 +161,14 @@ def current_weights() -> pd.Series | None:
 
 st.title("Laura Gao Quantitative Investment System — Simplified")
 st.caption(
-    "Eight-tab version: profile-specific stock, company, and ETF analysis, sector ranking, portfolio construction, optimization, stress testing, and settings."
+    "Research and decision-support tool for the Wharton Global High School Investment Competition: "
+    "profile-specific security analysis, portfolio construction, optimization, stress testing, and settings."
 )
 st.info(
     "Metric/category scores use **-100 to +100**. A secondary company rating maps the fundamental score to **0–100**. "
-    "Normal stocks, special financial companies, and ETFs use separate analysis profiles so inapplicable metrics are not treated as company failures."
+    "Normal stocks, special financial companies, and ETFs use separate analysis profiles so inapplicable metrics are not treated as company failures. "
+    "The competition evaluates strategy, client alignment, research, and communication—not portfolio return alone. "
+    "Use the official WInS security universe and registered-team instructions for competition submissions."
 )
 
 tabs = st.tabs([
@@ -482,7 +485,7 @@ with tabs[5]:
             st.dataframe(weights_df.style.format({"Weight": "{:.2%}"}), hide_index=True, use_container_width=True)
             st.bar_chart(weights_df.set_index("Ticker"))
             if selected == "Laura Portfolio":
-                st.caption("Laura Portfolio construction: 50% Maximum Sharpe + 50% Minimum Volatility. This is a model assumption, not a funding-confidence guarantee.")
+                st.caption(f"Laura Portfolio construction: {p['construction']}. This is a model assumption, not an official competition rule or funding-confidence guarantee.")
 
             st.markdown("**Correlation matrix**")
             st.dataframe(result["correlation"].round(2), use_container_width=True)
@@ -491,8 +494,8 @@ with tabs[5]:
                 p["expected_return"], p["volatility"],
                 cfg["laura"]["contribution_2027"],
                 cfg["laura"]["contribution_2028"],
-                simulations=100000,
-                seed=20260924,
+                simulations=int(cfg["laura"].get("reserve_simulations", 100000)),
+                seed=int(cfg["laura"].get("reserve_simulation_seed", 20260924)),
             )
             st.markdown("**Illustrative Expected 2033 Portfolio Value**")
             st.metric("Expected-value estimate", fmt_money(laura_value_2033(
@@ -509,7 +512,11 @@ with tabs[5]:
                 ],
             })
             st.dataframe(percentiles, hide_index=True, use_container_width=True)
-            st.caption("Simulated result: 100,000 reproducible paths using the selected portfolio's historical expected return and volatility; seed 20260924.")
+            st.caption(
+                f"Simulated result: {int(cfg['laura'].get('reserve_simulations', 100000)):,} "
+                f"reproducible paths using the selected portfolio's historical expected return and volatility; "
+                f"seed {int(cfg['laura'].get('reserve_simulation_seed', 20260924))}."
+            )
 
 # ------------------------- TAB 7 -------------------------
 with tabs[6]:
@@ -685,14 +692,17 @@ with tabs[9]:
     st.subheader("Reserve Optimizer")
     st.info("Laura's fixed nominal liability is $500,000: 10 × $50,000 beginning-of-year payments from 2033 through 2042.")
     st.write(f"**Nominal liability:** {fmt_money(LIABILITY)} = {PAYMENT_COUNT} × {fmt_money(PAYMENT)}")
+    reserve_targets = tuple(float(x) for x in cfg["laura"].get("reserve_funding_targets", (0.95, 0.99, 0.995, 0.999)))
+    recommended_target = float(cfg["laura"].get("funding_confidence_target", 0.95))
+    default_target = 0.995 if 0.995 in reserve_targets else recommended_target
     target = st.selectbox(
         "Recommended funding-success target",
-        TARGETS,
-        index=2,
+        reserve_targets,
+        index=reserve_targets.index(default_target) if default_target in reserve_targets else 0,
         format_func=lambda x: fmt_pct(x),
         key="t10_reserve_target",
     )
-    simulations = 100_000
+    simulations = max(100_000, int(cfg["laura"].get("reserve_simulations", 100_000)))
     seed = st.number_input("Reproducible simulation seed", min_value=1, value=20260924, step=1, key="t10_reserve_seed")
     try:
         normalized = normalize_reserve_weights(st.session_state.reserve_assets)
@@ -702,7 +712,7 @@ with tabs[9]:
             raise ValueError("Enter volatility for every selected reserve asset before running simulations.")
         portfolio_volatility = float(np.sqrt((normalized["weight"] * vol_values.pow(2)).sum()))
         deterministic_pv = deterministic_reserve_pv(reserve_yield)
-        results = required_reserves(reserve_yield, portfolio_volatility, TARGETS, simulations, int(seed))
+        results = required_reserves(reserve_yield, portfolio_volatility, reserve_targets, simulations, int(seed))
         st.metric("Weighted reserve yield estimate", fmt_pct(reserve_yield))
         st.metric("Deterministic PV of payments", fmt_money(deterministic_pv))
         st.caption("The deterministic PV uses the weighted yield estimate and beginning-of-year timing. It is not a guaranteed return.")
@@ -715,7 +725,6 @@ with tabs[9]:
         selected_required = float(results.loc[np.isclose(results["funding_target"], target), "required_reserve"].iloc[0])
         capital = float(cfg["laura"]["contribution_2027"] + cfg["laura"]["contribution_2028"])
         st.metric(f"Reserve surplus/shortfall at {fmt_pct(target)} target", fmt_money(capital - selected_required))
-        st.metric("Capital remaining above selected reserve", fmt_money(capital - selected_required))
-        st.caption(f"Recommended default: {fmt_pct(0.995)} success, equivalent to a {fmt_pct(0.005)} failure rate. Simulations: {simulations:,}; seed: {int(seed)}.")
+        st.caption(f"Recommended default: {fmt_pct(default_target)} success, equivalent to a {fmt_pct(1 - default_target)} failure rate. Simulations: {simulations:,}; seed: {int(seed)}.")
     except ValueError as exc:
         st.warning(str(exc))

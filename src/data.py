@@ -285,6 +285,59 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
     return result
 
 
+def etf_holdings(ticker: str, cfg: dict, force_refresh: bool = False) -> pd.DataFrame:
+    """Return Yahoo's published holdings for an ETF when available."""
+    _need_yfinance()
+    ticker = ticker.strip().upper().replace(".", "-")
+    key = f"holdings::{ticker}"
+    if not force_refresh:
+        cached = _cache_get(cfg["data"]["cache_dir"], key, float(cfg["data"]["cache_ttl_hours"]))
+        if cached is not None:
+            return cached
+
+    fund = yf.Ticker(ticker)
+    holdings = pd.DataFrame()
+    try:
+        get_holdings = getattr(fund, "get_holdings", None)
+        if callable(get_holdings):
+            holdings = get_holdings()
+    except Exception:
+        holdings = pd.DataFrame()
+    if holdings is None or holdings.empty:
+        try:
+            fund_data = fund.funds_data
+            holdings = getattr(fund_data, "top_holdings", pd.DataFrame())
+        except Exception:
+            holdings = pd.DataFrame()
+    if holdings is None or holdings.empty:
+        return pd.DataFrame()
+
+    out = holdings.reset_index()
+    rename = {}
+    for column in out.columns:
+        normalized = str(column).strip().lower().replace("_", "").replace(" ", "")
+        if normalized in {"symbol", "ticker"}:
+            rename[column] = "ticker"
+        elif normalized in {"holdingname", "name", "longname"}:
+            rename[column] = "holding"
+        elif "holdingpercent" in normalized or normalized in {"percent", "weight", "holdingweight"}:
+            rename[column] = "weight"
+    out = out.rename(columns=rename)
+    if "ticker" not in out.columns:
+        out.insert(0, "ticker", "")
+    if "holding" not in out.columns:
+        out.insert(1, "holding", "")
+    if "weight" in out.columns:
+        out["weight"] = pd.to_numeric(out["weight"], errors="coerce")
+        if out["weight"].dropna().max() > 1:
+            out["weight"] = out["weight"] / 100.0
+    else:
+        out["weight"] = np.nan
+    result = out[["ticker", "holding", "weight"]].copy()
+    _cache_set(cfg["data"]["cache_dir"], key, result)
+    return result
+
+
 def batch_analyze(tickers: Iterable[str], cfg: dict) -> tuple[pd.DataFrame, dict[str, pd.Series], dict[str, str]]:
     rows, prices, errors = [], {}, {}
     for ticker in list(dict.fromkeys(str(t).strip().upper() for t in tickers if str(t).strip())):

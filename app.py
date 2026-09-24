@@ -18,6 +18,7 @@ from src.data import (
     analyze_security,
     batch_analyze,
     download_price_period,
+    etf_holdings,
     load_local_universe,
     price_frame,
 )
@@ -99,20 +100,22 @@ def current_weights() -> pd.Series | None:
 
 st.title("Laura Gao Quantitative Investment System — Simplified")
 st.caption(
-    "Six-tab version: transparent stock scoring, sector ranking, candidate building, Monte Carlo portfolio search, stress testing, and settings."
+    "Eight-tab version: profile-specific stock, company, and ETF analysis, sector ranking, portfolio construction, optimization, stress testing, and settings."
 )
 st.info(
     "Metric/category scores use **-100 to +100**. A secondary company rating maps the fundamental score to **0–100**. "
-    "The bundled sector universe is stored locally, so Tab 2 no longer downloads a public universe page and avoids the prior SSL-certificate failure."
+    "Normal stocks, special financial companies, and ETFs use separate analysis profiles so inapplicable metrics are not treated as company failures."
 )
 
 tabs = st.tabs([
     "1 Stock Analyzer",
-    "2 Sector Rankings",
-    "3 Portfolio Builder",
-    "4 Portfolio Optimizer",
-    "9 Stress Test",
-    "10 Settings",
+    "2 Special Companies",
+    "3 ETF Analyzer",
+    "4 Sector Rankings",
+    "5 Portfolio Builder",
+    "6 Portfolio Optimizer",
+    "7 Stress Test",
+    "8 Settings",
 ])
 
 # ------------------------- TAB 1 -------------------------
@@ -123,8 +126,11 @@ with tabs[0]:
         try:
             with st.spinner(f"Downloading {ticker} data..."):
                 metrics, _ = analyze_security(ticker, cfg)
-                scored = score_security(metrics, cfg)
-                st.session_state.single_result = (metrics, scored)
+                if metrics.get("analysis_profile") != "operating_company":
+                    st.error("This ticker is not a normal operating stock. Use Special Companies or ETF Analyzer.")
+                else:
+                    scored = score_security(metrics, cfg)
+                    st.session_state.single_result = (metrics, scored)
         except Exception as e:
             st.error(f"Could not analyze {ticker}: {e}")
 
@@ -171,6 +177,68 @@ with tabs[0]:
 
 # ------------------------- TAB 2 -------------------------
 with tabs[1]:
+    st.subheader("Special Company Analyzer")
+    st.caption("For financial companies and conglomerates whose economics are not comparable to ordinary operating stocks.")
+    ticker = st.text_input("Company ticker", "BRK-B", key="special_ticker").strip().upper()
+    if st.button("Analyze special company", key="special_analyze"):
+        try:
+            with st.spinner(f"Downloading {ticker} data..."):
+                metrics, _ = analyze_security(ticker, cfg, force_refresh=True)
+                if metrics.get("analysis_profile") not in {"financial_company", "financial_conglomerate"}:
+                    st.error("This ticker is classified as a normal operating stock. Use Stock Analyzer instead.")
+                else:
+                    st.session_state.special_result = (metrics, score_security(metrics, cfg))
+        except Exception as e:
+            st.error(f"Could not analyze {ticker}: {e}")
+    if "special_result" in st.session_state:
+        metrics, scored = st.session_state.special_result
+        st.success(f"Profile: {metrics.get('analysis_profile', 'financial_company')}")
+        st.dataframe(pd.DataFrame([
+            ["Growth", scored["growth_score"]],
+            ["Quality / Financial Strength", scored["quality_score"]],
+            ["Valuation", scored["valuation_score"]],
+            ["Risk & resilience", scored["risk_score"]],
+            ["Mapped rating", scored["display_rating"]],
+        ], columns=["Category", "Score"]), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}), hide_index=True, use_container_width=True)
+
+# ------------------------- TAB 3 -------------------------
+with tabs[2]:
+    st.subheader("ETF Analyzer")
+    st.caption("ETF scoring uses fund-level data. The holdings table shows the assets Yahoo Finance publishes for the selected ETF.")
+    ticker = st.text_input("ETF ticker", "SPY", key="etf_ticker").strip().upper()
+    if st.button("Analyze ETF", key="etf_analyze"):
+        try:
+            with st.spinner(f"Downloading {ticker} ETF data..."):
+                metrics, _ = analyze_security(ticker, cfg, force_refresh=True)
+                if metrics.get("analysis_profile") not in {"equity_etf", "fixed_income_etf"}:
+                    st.error("This ticker is not classified as an ETF.")
+                else:
+                    holdings = etf_holdings(ticker, cfg, force_refresh=True)
+                    st.session_state.etf_result = (metrics, score_security(metrics, cfg), holdings)
+        except Exception as e:
+            st.error(f"Could not analyze ETF {ticker}: {e}")
+    if "etf_result" in st.session_state:
+        metrics, scored, holdings = st.session_state.etf_result
+        st.success(f"Profile: {metrics.get('analysis_profile')}")
+        st.dataframe(pd.DataFrame([
+            ["Growth / distribution", scored["growth_score"]],
+            ["Fund quality", scored["quality_score"]],
+            ["Portfolio valuation", scored["valuation_score"]],
+            ["Risk", scored["risk_score"]],
+            ["Mapped rating", scored["display_rating"]],
+        ], columns=["Category", "Score"]), hide_index=True, use_container_width=True)
+        if holdings.empty:
+            st.warning("Yahoo Finance did not provide a holdings list for this ETF.")
+        else:
+            st.markdown(f"**Assets linked to {metrics['ticker']} ({len(holdings)} holdings reported)**")
+            st.dataframe(holdings.style.format({"weight": "{:.2%}"}), hide_index=True, use_container_width=True)
+            st.download_button("Download ETF holdings CSV", holdings.to_csv(index=False).encode("utf-8"),
+                               file_name=f"{metrics['ticker']}_holdings.csv", mime="text/csv", key="etf_holdings_download")
+        st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": list(metrics.values())}), hide_index=True, use_container_width=True)
+
+# ------------------------- TAB 4 -------------------------
+with tabs[3]:
     st.subheader("Sector Rankings")
     st.success("SSL fix: the default universe is a bundled local CSV. Loading the universe itself makes no internet/SSL request.")
     source = st.radio(
@@ -252,8 +320,8 @@ with tabs[1]:
             with st.expander("Tickers that could not be analyzed"):
                 st.json(st.session_state.sector_errors)
 
-# ------------------------- TAB 3 -------------------------
-with tabs[2]:
+# ------------------------- TAB 5 -------------------------
+with tabs[4]:
     st.subheader("Portfolio Builder")
     text = st.text_area(
         "Candidate tickers (comma or new-line separated)",
@@ -289,12 +357,12 @@ with tabs[2]:
         with st.expander("Candidate download errors"):
             st.json(st.session_state.candidate_errors)
 
-# ------------------------- TAB 4 -------------------------
-with tabs[3]:
+# ------------------------- TAB 6 -------------------------
+with tabs[5]:
     st.subheader("Portfolio Optimizer")
     st.caption("Simplified mechanics: random feasible long-only portfolios are generated under the max-holding limit. This avoids the line-search optimizer errors from the previous version.")
     if st.session_state.candidate_prices.empty:
-        st.warning("Go to Tab 3 and download candidate data first.")
+        st.warning("Go to Tab 5 and download candidate data first.")
     else:
         usable = st.session_state.candidate_prices.dropna(how="all", axis=1)
         cap = float(cfg["optimizer"]["max_weight"])
@@ -356,8 +424,8 @@ with tabs[3]:
             c3.metric("Capital above reserve", fmt_money(v2033 - reserve))
             st.caption("This is an assumption-driven expected-value illustration using the portfolio's historical-return estimate. It is not a funding-probability calculation or a guarantee.")
 
-# ------------------------- TAB 9 -------------------------
-with tabs[4]:
+# ------------------------- TAB 7 -------------------------
+with tabs[6]:
     st.subheader("Stress Test")
     result = st.session_state.optimizer_result
     if not result:
@@ -419,8 +487,8 @@ with tabs[4]:
         s3.metric("Capital above deterministic reserve", fmt_money(pre2033_after_shock - reserve))
         st.caption("The reserve figure is the present value of ten beginning-of-year $50,000 payments using the reserve-yield assumption in Settings. This simplified version does not claim a Monte Carlo funding probability.")
 
-# ------------------------- TAB 10 -------------------------
-with tabs[5]:
+# ------------------------- TAB 8 -------------------------
+with tabs[7]:
     st.subheader("Settings")
     st.caption("All scoring mechanics remain transparent. Apply changes to the current session; Reset returns to config.yaml defaults.")
 

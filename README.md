@@ -4,12 +4,14 @@ This version intentionally simplifies the earlier project while preserving the m
 
 ## Included tabs
 
-1. Stock Analyzer
-2. Sector Rankings
-3. Portfolio Builder
-4. Portfolio Optimizer
-9. Stress Test
-10. Settings
+1. Stock Analyzer — normal operating companies
+2. Special Companies — financial companies and conglomerates such as Berkshire Hathaway
+3. ETF Analyzer — equity and fixed-income ETFs, including reported holdings
+4. Sector Rankings
+5. Portfolio Builder
+6. Portfolio Optimizer
+7. Stress Test
+8. Settings
 
 Tabs 5–8 from the larger model were removed. Laura-specific cash-flow context is kept as a simpler 2033 funding lens inside Tabs 4 and 9.
 

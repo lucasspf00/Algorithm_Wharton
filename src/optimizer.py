@@ -115,6 +115,19 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "sharpe": float(stats.loc[i, "sharpe"]),
         }
 
+    # Laura Portfolio balances the configured preferred reference (Maximum
+    # Sharpe) with Minimum Volatility to preserve flexibility for the 2033
+    # reserve. The blend remains feasible because both source portfolios are.
+    laura_w = (W[max_sharpe_i] * 0.50) + (W[min_vol_i] * 0.50)
+    laura_ret, laura_vol, laura_sharpe = portfolio_stats(laura_w, mu, cov, rf)
+    laura_portfolio = {
+        "weights": pd.Series(laura_w, index=tickers),
+        "expected_return": laura_ret,
+        "volatility": laura_vol,
+        "sharpe": laura_sharpe,
+        "construction": "50% Maximum Sharpe + 50% Minimum Volatility",
+    }
+
     return {
         "returns": returns,
         "expected_returns": mu_s,
@@ -125,6 +138,7 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "Minimum Volatility": pack(min_vol_i),
             "Maximum Sharpe": pack(max_sharpe_i),
             "Maximum Expected Return": pack(max_return_i),
+            "Laura Portfolio": laura_portfolio,
         },
     }
 

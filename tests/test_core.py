@@ -113,7 +113,7 @@ test_cfg = load_config()
 test_cfg["optimizer"]["simulations"] = 500
 test_cfg["optimizer"]["max_weight"] = 0.20
 opt = monte_carlo_optimize(synthetic, test_cfg)
-assert set(opt["portfolios"]) == {"Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return"}
+assert set(opt["portfolios"]) == {"Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return", "Laura Portfolio"}
 for p in opt["portfolios"].values():
     assert np.isclose(p["weights"].sum(), 1.0)
     assert p["weights"].max() <= 0.2000001

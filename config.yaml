@@ -63,6 +63,15 @@ laura:
   annual_payment: 50000
   payment_count: 10
   reserve_yield: 0.04
+  funding_confidence_target: 0.95
+  preferred_current_portfolio_reference: maximum_sharpe
+  portfolio_blend:
+    maximum_sharpe: 0.50
+    minimum_volatility: 0.50
+  short_selling: false
+  max_holding_weight: 0.20
+  minimum_holding_weight: 0.00
+  wins_results_included_in_long_term_projection: false
 
 stress:
   custom_equity_shock: -0.30

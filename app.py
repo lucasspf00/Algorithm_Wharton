@@ -422,6 +422,8 @@ with tabs[5]:
             c1.metric("Projected 2033 value", fmt_money(v2033))
             c2.metric("PV of 10 × $50k reserve", fmt_money(reserve))
             c3.metric("Capital above reserve", fmt_money(v2033 - reserve))
+            if selected == "Laura Portfolio":
+                st.caption("Laura Portfolio construction: 50% Maximum Sharpe + 50% Minimum Volatility. This is a model assumption, not a funding-confidence guarantee.")
             st.caption("This is an assumption-driven expected-value illustration using the portfolio's historical-return estimate. It is not a funding-probability calculation or a guarantee.")
 
 # ------------------------- TAB 7 -------------------------

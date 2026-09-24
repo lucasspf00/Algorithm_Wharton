@@ -130,6 +130,7 @@ with tabs[0]:
 
     if "single_result" in st.session_state:
         metrics, scored = st.session_state.single_result
+        profile = metrics.get("analysis_profile", scored.get("analysis_profile", "operating_company"))
         a, b, c, d = st.columns(4)
         a.metric("Fundamental score", f"{scored['fundamental_score']:+.1f} / 100" if np.isfinite(scored["fundamental_score"]) else "Unavailable")
         b.metric("Mapped rating", f"{scored['display_rating']:.1f} / 100" if np.isfinite(scored["display_rating"]) else "Unavailable")
@@ -138,7 +139,7 @@ with tabs[0]:
 
         st.write(
             f"**{metrics['company']}** · {metrics['sector']} · {metrics['industry']} · "
-            f"`{metrics['analysis_profile']}`"
+            f"`{profile}`"
         )
         cats = pd.DataFrame([
             ["Growth", scored["growth_score"]],

@@ -711,7 +711,8 @@ with tabs[9]:
         key="t10_reserve_target",
     )
     simulations = max(100_000, int(cfg["laura"].get("reserve_simulations", 100_000)))
-    seed = st.number_input("Reproducible simulation seed", min_value=1, value=20260924, step=1, key="t10_reserve_seed")
+    configured_seed = int(cfg["laura"].get("reserve_simulation_seed", 20260924))
+    seed = st.number_input("Reproducible simulation seed", min_value=1, value=configured_seed, step=1, key="t10_reserve_seed")
     try:
         normalized = normalize_reserve_weights(st.session_state.reserve_assets)
         reserve_yield = weighted_reserve_yield(normalized)

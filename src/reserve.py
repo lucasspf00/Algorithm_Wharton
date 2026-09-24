@@ -74,10 +74,24 @@ def funding_success_probability(
     simulations: int = 100_000,
     seed: int = 20260924,
 ) -> float:
-    ending = simulate_reserve_paths(
-        starting_reserve, reserve_yield, volatility, simulations, seed
-    )
-    return float(np.mean(ending >= 0))
+    if simulations < 100_000:
+        raise ValueError("Final reserve analysis requires at least 100,000 simulations.")
+    if starting_reserve < 0 or volatility < 0 or reserve_yield <= -1:
+        raise ValueError("Invalid reserve assumptions.")
+    rng = np.random.default_rng(seed)
+    values = np.full(simulations, float(starting_reserve))
+    survived = np.ones(simulations, dtype=bool)
+    for year in range(PAYMENT_COUNT):
+        survived &= values >= PAYMENT
+        values = np.where(survived, values - PAYMENT, 0.0)
+        if year < PAYMENT_COUNT - 1:
+            shocks = rng.normal(
+                reserve_yield - 0.5 * volatility**2,
+                volatility,
+                simulations,
+            )
+            values = np.where(survived, values * np.exp(shocks), 0.0)
+    return float(np.mean(survived))
 
 
 def required_reserves(

@@ -13,6 +13,7 @@ from src.data import load_local_universe, _security_profile, normalize_ticker, d
 from src.stress import hypothetical_stress
 from src.reserve import (
     deterministic_reserve_pv,
+    funding_success_probability,
     normalize_reserve_weights,
     required_reserves,
 )
@@ -98,6 +99,8 @@ assert np.isclose(deterministic_reserve_pv(0.04), reserve)
 reserve_results = required_reserves(0.04, 0.05, targets=(0.95,), simulations=100000, seed=7)
 assert reserve_results.loc[0, "required_reserve"] >= 0
 assert reserve_results.loc[0, "simulated_success"] >= 0.95
+assert funding_success_probability(0, 0.04, 0.05, simulations=100000, seed=7) == 0.0
+assert funding_success_probability(500000, 0.04, 0.0, simulations=100000, seed=7) == 1.0
 
 u = load_local_universe()
 assert {"ticker", "company", "sector"}.issubset(u.columns)

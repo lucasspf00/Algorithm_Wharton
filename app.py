@@ -297,13 +297,16 @@ with tabs[0]:
             if st.session_state.sector_errors:
                 st.json(st.session_state.sector_errors)
     else:
+        if "candidate_text_pending" in st.session_state:
+            st.session_state.candidate_text = st.session_state.pop("candidate_text_pending")
         if "candidate_text" not in st.session_state:
             st.session_state.candidate_text = ", ".join(st.session_state.candidates)
         text = st.text_area("Mixed candidate tickers", key="candidate_text", height=110)
         if st.button("Save candidate list", key="candidate_save"):
             st.session_state.candidates = list(dict.fromkeys(normalize_ticker(x) for x in text.replace("\n", ",").split(",") if x.strip()))
-            st.session_state.candidate_text = ", ".join(st.session_state.candidates)
+            st.session_state.candidate_text_pending = ", ".join(st.session_state.candidates)
             st.success(f"Saved {len(st.session_state.candidates)} candidates.")
+            st.rerun()
         if st.button("Analyze and load candidates", key="candidate_load"):
             with st.spinner("Downloading candidate data once..."):
                 raw, prices, errors = cached_batch(tuple(st.session_state.candidates), cfg["data"]["cache_dir"], float(cfg["data"]["cache_ttl_hours"]))

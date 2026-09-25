@@ -22,8 +22,18 @@ from src.data import (
     load_local_universe,
     normalize_ticker,
     price_frame,
-    reserve_asset_profile,
 )
+try:
+    from src.data import reserve_asset_profile
+except ImportError:
+    def reserve_asset_profile(ticker: str) -> str:
+        """Compatibility fallback for a stale Streamlit data module."""
+        symbol = normalize_ticker(ticker)
+        if symbol in {"BIL", "SGOV", "SHY", "IEF", "TLT", "GOVT", "BND", "AGG"}:
+            return "fixed_income_etf"
+        if symbol in {"VOO", "QQQ", "VTI", "SPY"}:
+            return "equity_etf"
+        return "unknown"
 from src.optimizer import laura_value_2033, monte_carlo_optimize, simulate_2033_distribution
 from src.reserve import (
     LIABILITY,

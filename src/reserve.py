@@ -3,7 +3,18 @@ from __future__ import annotations
 from typing import Iterable
 import numpy as np
 import pandas as pd
-from .data import reserve_asset_profile
+
+try:
+    from .data import reserve_asset_profile
+except ImportError:
+    def reserve_asset_profile(ticker: str) -> str:
+        """Compatibility fallback for deployments with an older data module."""
+        symbol = str(ticker).strip().upper().replace(".", "-")
+        if symbol in {"BIL", "SGOV", "SHY", "IEF", "TLT", "GOVT", "BND", "AGG"}:
+            return "fixed_income_etf"
+        if symbol in {"VOO", "QQQ", "VTI", "SPY"}:
+            return "equity_etf"
+        return "unknown"
 
 
 LIABILITY = 500_000.0

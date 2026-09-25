@@ -53,6 +53,8 @@ if "candidate_errors" not in st.session_state:
     st.session_state.candidate_errors = {}
 if "optimizer_result" not in st.session_state:
     st.session_state.optimizer_result = None
+if "reserve_optimizer_result" not in st.session_state:
+    st.session_state.reserve_optimizer_result = None
 if "selected_portfolio" not in st.session_state:
     st.session_state.selected_portfolio = "Maximum Sharpe"
 if "reserve_assets" not in st.session_state:
@@ -731,6 +733,7 @@ with tabs[9]:
         "The seed initializes the pseudo-random paths. Keeping the same seed and inputs makes "
         "results repeatable; changing it creates a different, equally valid sample of simulated paths."
     )
+    st.info("Editing reserve assets is immediate. Click **Run reserve analysis** after you finish entering values; the 100,000-path simulation does not run on every edit.")
     try:
         normalized = normalize_reserve_weights(st.session_state.reserve_assets)
         reserve_yield = weighted_reserve_yield(normalized)
@@ -739,19 +742,41 @@ with tabs[9]:
             raise ValueError("Enter volatility for every selected reserve asset before running simulations.")
         portfolio_volatility = float(np.sqrt((normalized["weight"] * vol_values.pow(2)).sum()))
         deterministic_pv = deterministic_reserve_pv(reserve_yield)
-        results = required_reserves(reserve_yield, portfolio_volatility, reserve_targets, simulations, int(seed))
+        reserve_signature = (
+            tuple(normalized[["asset", "weight", "yield", "volatility"]].fillna("").itertuples(index=False, name=None)),
+            reserve_targets,
+            simulations,
+            int(seed),
+        )
         st.metric("Weighted reserve yield estimate", fmt_pct(reserve_yield))
         st.metric("Deterministic PV of payments", fmt_money(deterministic_pv))
         st.caption("The deterministic PV uses the weighted yield estimate and beginning-of-year timing. It is not a guaranteed return.")
-        display = results.copy()
-        display["Funding target"] = display["funding_target"].map(fmt_pct)
-        display["Failure rate"] = display["failure_rate"].map(fmt_pct)
-        display["Required reserve"] = display["required_reserve"].map(fmt_money)
-        display["Simulated success"] = display["simulated_success"].map(fmt_pct)
-        st.dataframe(display[["Funding target", "Failure rate", "Required reserve", "Simulated success"]], hide_index=True, use_container_width=True)
-        selected_required = float(results.loc[np.isclose(results["funding_target"], target), "required_reserve"].iloc[0])
-        capital = float(cfg["laura"]["contribution_2027"] + cfg["laura"]["contribution_2028"])
-        st.metric(f"Reserve surplus/shortfall at {fmt_pct(target)} target", fmt_money(capital - selected_required))
-        st.caption(f"Recommended default: {fmt_pct(default_target)} success, equivalent to a {fmt_pct(1 - default_target)} failure rate. Simulations: {simulations:,}; seed: {int(seed)}.")
+        if st.button("Run reserve analysis", key="t10_run_reserve"):
+            with st.spinner("Running 100,000+ reserve simulations..."):
+                st.session_state.reserve_optimizer_result = {
+                    "results": required_reserves(
+                        reserve_yield, portfolio_volatility, reserve_targets, simulations, int(seed)
+                    ),
+                    "target": target,
+                    "yield": reserve_yield,
+                    "volatility": portfolio_volatility,
+                    "seed": int(seed),
+                    "signature": reserve_signature,
+                }
+        saved = st.session_state.reserve_optimizer_result
+        if saved is not None and saved.get("signature") == reserve_signature:
+            results = saved["results"]
+            display = results.copy()
+            display["Funding target"] = display["funding_target"].map(fmt_pct)
+            display["Failure rate"] = display["failure_rate"].map(fmt_pct)
+            display["Required reserve"] = display["required_reserve"].map(fmt_money)
+            display["Simulated success"] = display["simulated_success"].map(fmt_pct)
+            st.dataframe(display[["Funding target", "Failure rate", "Required reserve", "Simulated success"]], hide_index=True, use_container_width=True)
+            selected_required = float(results.loc[np.isclose(results["funding_target"], target), "required_reserve"].iloc[0])
+            capital = float(cfg["laura"]["contribution_2027"] + cfg["laura"]["contribution_2028"])
+            st.metric(f"Reserve surplus/shortfall at {fmt_pct(target)} target", fmt_money(capital - selected_required))
+            st.caption(f"Recommended default: {fmt_pct(default_target)} success, equivalent to a {fmt_pct(1 - default_target)} failure rate. Simulations: {simulations:,}; seed: {int(seed)}.")
+        else:
+            st.caption("No reserve simulation has been run for the current inputs.")
     except ValueError as exc:
         st.warning(str(exc))

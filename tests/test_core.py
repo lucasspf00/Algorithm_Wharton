@@ -9,13 +9,14 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.scoring import normalize_symmetric, score_security
 from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033, simulate_2033_distribution
-from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type
+from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type, reserve_asset_profile
 from src.stress import hypothetical_stress
 from src.reserve import (
     deterministic_reserve_pv,
     funding_success_probability,
     normalize_reserve_weights,
     required_reserves,
+    weighted_reserve_yield,
 )
 
 cfg = load_config()
@@ -35,14 +36,22 @@ metrics = {
 }
 scored = score_security(metrics, cfg)
 assert -100 <= scored["fundamental_score"] <= 100
-assert 0 <= scored["display_rating"] <= 100
+assert -100 <= scored["main_score"] <= 100
 assert scored["data_confidence"] > 90
 
 assert _security_profile("SPY", {"quoteType": "ETF", "category": "Large Blend"})["analysis_profile"] == "equity_etf"
 assert _security_profile("TLT", {"quoteType": "ETF", "category": "Intermediate Government"})["analysis_profile"] == "fixed_income_etf"
 assert _security_profile("BRK-B", {"quoteType": "EQUITY", "longName": "Berkshire Hathaway Inc."})["analysis_profile"] == "financial_conglomerate"
 assert normalize_ticker("BRK.B") == "BRK-B"
+assert normalize_ticker("BF.B") == "BF-B"
 assert detect_asset_type("JPM", {"quoteType": "EQUITY", "sector": "Financial Services"}) == "financial_stock"
+for ticker in ("JPM", "BAC"):
+    assert _security_profile(ticker, {"quoteType": "EQUITY"})["analysis_profile"] == "financial_company"
+assert _security_profile("BRK-B", {"quoteType": "EQUITY"})["analysis_profile"] == "financial_conglomerate"
+for ticker in ("VOO", "QQQ", "VTI", "SPY"):
+    assert reserve_asset_profile(ticker) == "equity_etf"
+for ticker in ("BND", "AGG", "SGOV", "SHY", "IEF", "TLT", "GOVT", "BIL"):
+    assert reserve_asset_profile(ticker) == "fixed_income_etf"
 
 etf_scored = score_security({
     "analysis_profile": "equity_etf",
@@ -53,6 +62,8 @@ etf_scored = score_security({
 }, cfg)
 assert etf_scored["analysis_profile"] == "equity_etf"
 assert etf_scored["data_confidence"] > 80
+assert -100 <= etf_scored["main_score"] <= 100
+assert "Equity ETF" in etf_scored["scoring_engine"]
 
 brk_scored = score_security({
     "analysis_profile": "financial_conglomerate", "revenue_growth_1y": 0.05,
@@ -96,6 +107,11 @@ reserve_assets = pd.DataFrame([
 ])
 assert np.isclose(normalize_reserve_weights(reserve_assets)["weight"].sum(), 1.0)
 assert np.isclose(deterministic_reserve_pv(0.04), reserve)
+try:
+    weighted_reserve_yield(pd.DataFrame([{"asset": "VOO", "weight": 1.0, "yield": 0.04}]))
+    raise AssertionError("Equity ETF incorrectly accepted as reserve yield")
+except ValueError:
+    pass
 reserve_results = required_reserves(0.04, 0.05, targets=(0.95,), simulations=100000, seed=7)
 assert reserve_results.loc[0, "required_reserve"] >= 0
 assert reserve_results.loc[0, "simulated_success"] >= 0.95
@@ -132,9 +148,9 @@ test_cfg["optimizer"]["simulations"] = 500
 test_cfg["optimizer"]["max_weight"] = 0.20
 opt = monte_carlo_optimize(synthetic, test_cfg)
 assert set(opt["portfolios"]) == {
-    "Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return", "Laura Portfolio"
+    "Minimum Volatility", "Maximum Sharpe", "Maximum Expected Return", "Laura Goal Portfolio"
 }
-laura_weights = opt["portfolios"]["Laura Portfolio"]["weights"]
+laura_weights = opt["portfolios"]["Laura Goal Portfolio"]["weights"]
 assert np.isclose(laura_weights.sum(), 1.0)
 assert laura_weights.min() >= -1e-12
 assert laura_weights.max() <= 0.2000001
@@ -149,7 +165,7 @@ custom_cfg["laura"]["portfolio_blend"] = {
     "minimum_volatility": 0.25,
 }
 custom_opt = monte_carlo_optimize(synthetic, custom_cfg)
-assert custom_opt["portfolios"]["Laura Portfolio"]["construction"] == "75.0% Maximum Sharpe + 25.0% Minimum Volatility"
+assert custom_opt["portfolios"]["Laura Goal Portfolio"]["construction"].startswith("75.0% Maximum Sharpe + 25.0% Minimum Volatility")
 
 hist = historical_portfolio_stress(synthetic.iloc[:120], opt["portfolios"]["Maximum Sharpe"]["weights"])
 assert hist["available"]

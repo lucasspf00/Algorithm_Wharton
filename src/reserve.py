@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Iterable
 import numpy as np
 import pandas as pd
+from .data import reserve_asset_profile
 
 
 LIABILITY = 500_000.0
@@ -25,8 +26,15 @@ def normalize_reserve_weights(assets: pd.DataFrame) -> pd.DataFrame:
 
 
 def weighted_reserve_yield(assets: pd.DataFrame) -> float:
-    """Weighted yield estimate; unavailable when any selected yield is missing."""
+    """Weighted model yield from fixed-income reserve assets only."""
     out = normalize_reserve_weights(assets)
+    if "asset" not in out.columns:
+        raise ValueError("Reserve assets must include an asset ticker.")
+    profiles = out["asset"].map(reserve_asset_profile)
+    if profiles.eq("equity_etf").any():
+        raise ValueError("Equity ETFs such as VOO cannot be used as reserve-yield assets.")
+    if profiles.eq("unknown").any():
+        raise ValueError("Reserve yield is available only for recognized fixed-income reserve ETFs.")
     yields = pd.to_numeric(out["yield"], errors="coerce")
     if yields.isna().any():
         raise ValueError("Enter a yield for every selected reserve asset; missing yields are not fabricated.")

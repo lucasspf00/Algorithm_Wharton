@@ -1,4 +1,11 @@
 scoring:
+  main_score:
+    display_range: [-100, 100]
+    engines:
+      operating_company: "30% Growth + 40% Quality/Financial Strength + 30% Valuation"
+      financial_stock: "Dedicated Growth + Financial Quality + Valuation"
+      equity_etf: "35% Return + 35% Risk/Resilience + 30% Diversification/Efficiency"
+      fixed_income_etf: "40% Stability/Risk + 30% Return + 30% Efficiency/Liquidity"
   category_weights:
     growth: 0.30
     quality: 0.40
@@ -68,6 +75,8 @@ laura:
   portfolio_blend:
     maximum_sharpe: 0.50
     minimum_volatility: 0.50
+  goal_portfolio_name: "Laura Goal Portfolio"
+  goal_portfolio_reserve_target: 0.995
   short_selling: false
   max_holding_weight: 0.20
   minimum_holding_weight: 0.00
@@ -79,6 +88,7 @@ laura:
     - 0.99
     - 0.995
     - 0.999
+  reserve_yield_policy: "Only recognized fixed-income reserve ETFs; SEC Yield and YTM remain separate; missing values are unavailable."
 
 stress:
   custom_equity_shock: -0.30

@@ -88,7 +88,6 @@ def _finish_score(metric_scores: dict, categories: Mapping[str, float], coverage
                   category_weights: Mapping[str, float] | None = None) -> dict:
     category_weights = category_weights or cfg["scoring"]["category_weights"]
     fundamental_score, _ = weighted_available(categories, category_weights)
-    display_rating = (fundamental_score + 100.0) / 2.0 if _finite(fundamental_score) else np.nan
     category_cov = sum(
         float(category_weights.get(k, 0.0)) * float(coverage.get(k, 0.0))
         for k in categories
@@ -99,11 +98,18 @@ def _finish_score(metric_scores: dict, categories: Mapping[str, float], coverage
         "quality_score": categories.get("quality", np.nan),
         "valuation_score": categories.get("valuation", np.nan),
         "fundamental_score": fundamental_score,
-        "display_rating": display_rating,
+        "main_score": fundamental_score,
         "risk_score": risk_score,
         "data_confidence": category_cov * 100.0,
         "risk_data_coverage": risk_cov * 100.0,
         "analysis_profile": profile,
+        "scoring_engine": {
+            "operating_company": "Standard Stock: 30% Growth + 40% Quality/Financial Strength + 30% Valuation",
+            "financial_stock": "Financial Stock: dedicated Growth + Financial Quality + Valuation model",
+            "financial_conglomerate": "Financial Stock: dedicated Growth + Financial Quality + Valuation model",
+            "equity_etf": "Equity ETF: 35% Return + 35% Risk/Resilience + 30% Diversification/Efficiency",
+            "fixed_income_etf": "Fixed-Income ETF: 40% Stability/Risk + 30% Return + 30% Efficiency/Liquidity",
+        }.get(profile, profile),
     }
 
 
@@ -238,16 +244,30 @@ def _score_fund(metrics: Mapping[str, float], cfg: dict, profile: str) -> dict:
     metric_scores.update({f"return::{key}": value for key, value in return_values.items()})
     metric_scores.update({"portfolio_pe": metric_scores["portfolio_pe"], "portfolio_pb": metric_scores["portfolio_pb"]})
     if is_fixed_income:
+        # Keep the public category keys compatible with the existing UI while
+        # naming the fixed-income concepts explicitly in the result.
         categories = {"growth": returns, "quality": risk_score, "valuation": efficiency}
         weights = {"growth": .30, "quality": .40, "valuation": .30}
+        category_labels = {
+            "growth": "Return",
+            "quality": "Stability / Risk",
+            "valuation": "Efficiency / Liquidity",
+        }
     else:
         categories = {"growth": returns, "quality": risk_score, "valuation": efficiency}
         weights = {"growth": .35, "quality": .35, "valuation": .30}
-    return _finish_score(
+        category_labels = {
+            "growth": "Return",
+            "quality": "Risk / Resilience",
+            "valuation": "Diversification / Efficiency",
+        }
+    result = _finish_score(
         metric_scores, categories,
         {"growth": return_cov, "quality": risk_cov, "valuation": efficiency_cov},
         risk_score, risk_cov, cfg, profile, weights,
     )
+    result["category_labels"] = category_labels
+    return result
 
 
 def _score_conglomerate(metrics: Mapping[str, float], cfg: dict) -> dict:
@@ -278,7 +298,6 @@ def _score_conglomerate(metrics: Mapping[str, float], cfg: dict) -> dict:
         {"growth": result["growth_score"], "quality": result["quality_score"], "valuation": result["valuation_score"]},
         cfg["scoring"]["category_weights"],
     )
-    result["display_rating"] = (result["fundamental_score"] + 100.0) / 2.0
     return result
 
 
@@ -287,5 +306,17 @@ def score_security(metrics: Mapping[str, float], cfg: dict) -> dict:
     if profile in {"equity_etf", "fixed_income_etf"}:
         return _score_fund(metrics, cfg, profile)
     if profile in {"financial_conglomerate", "financial_company"}:
-        return _score_financial_stock(metrics, cfg)
-    return _score_operating_company(metrics, cfg, profile)
+        result = _score_financial_stock(metrics, cfg)
+        result["category_labels"] = {
+            "growth": "Growth",
+            "quality": "Financial Quality",
+            "valuation": "Valuation",
+        }
+        return result
+    result = _score_operating_company(metrics, cfg, profile)
+    result["category_labels"] = {
+        "growth": "Growth",
+        "quality": "Quality / Financial Strength",
+        "valuation": "Valuation",
+    }
+    return result

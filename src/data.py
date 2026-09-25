@@ -32,6 +32,23 @@ def normalize_ticker(ticker: str) -> str:
     return str(ticker).strip().upper().replace(".", "-")
 
 
+FIXED_INCOME_ETFS = {
+    "BIL", "SGOV", "SHY", "IEF", "TLT", "GOVT", "BND", "AGG",
+}
+EQUITY_ETFS = {"VOO", "QQQ", "VTI", "SPY"}
+FINANCIAL_STOCKS = {"JPM", "BAC", "BRK-A", "BRK-B"}
+
+
+def reserve_asset_profile(ticker: str) -> str:
+    """Return the conservative reserve classification for known symbols."""
+    symbol = normalize_ticker(ticker)
+    if symbol in FIXED_INCOME_ETFS:
+        return "fixed_income_etf"
+    if symbol in EQUITY_ETFS:
+        return "equity_etf"
+    return "unknown"
+
+
 def detect_asset_type(ticker: str, info: dict) -> str:
     profile = _security_profile(normalize_ticker(ticker), info)["analysis_profile"]
     return {
@@ -165,12 +182,19 @@ def _security_profile(ticker: str, info: dict) -> dict[str, str]:
         str(info.get(k, ""))
         for k in ["category", "fundFamily", "longName", "shortName", "industry", "sector"]
     ).lower()
+    known_reserve_profile = reserve_asset_profile(ticker)
+    if known_reserve_profile == "fixed_income_etf":
+        return {"security_type": "ETF", "analysis_profile": "fixed_income_etf", "asset_class": "fixed_income"}
+    if known_reserve_profile == "equity_etf":
+        return {"security_type": "ETF", "analysis_profile": "equity_etf", "asset_class": "equity_etf"}
     if qt == "ETF":
         if any(x in text for x in ["bond", "treasury", "fixed income", "government"]):
             return {"security_type": "ETF", "analysis_profile": "fixed_income_etf", "asset_class": "fixed_income"}
         return {"security_type": "ETF", "analysis_profile": "equity_etf", "asset_class": "equity_etf"}
     if ticker in {"BRK-A", "BRK-B"} or "berkshire hathaway" in text:
         return {"security_type": "stock", "analysis_profile": "financial_conglomerate", "asset_class": "stock"}
+    if ticker in {"JPM", "BAC"}:
+        return {"security_type": "stock", "analysis_profile": "financial_company", "asset_class": "stock"}
     if any(x in text for x in ["bank", "insurance", "financial services", "financial"]):
         return {"security_type": "stock", "analysis_profile": "financial_company", "asset_class": "stock"}
     return {"security_type": "stock", "analysis_profile": "operating_company", "asset_class": "stock"}
@@ -315,6 +339,24 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "portfolio_pb": _safe_num(info.get("priceToBook")),
         "distribution_yield": _safe_num(info.get("yield") or info.get("dividendYield")),
         "dividend_yield": _safe_num(info.get("dividendYield")),
+        "sec_yield_30d": _safe_num(
+            info.get("yield")
+            or info.get("yieldToMaturity")
+            or info.get("thirtyDayYield")
+        ),
+        "yield_to_maturity": _safe_num(
+            info.get("yieldToMaturity")
+            or info.get("yieldToMaturityPercent")
+        ),
+        "effective_duration": _safe_num(
+            info.get("duration")
+            or info.get("effectiveDuration")
+        ),
+        "weighted_average_maturity": _safe_num(
+            info.get("maturity")
+            or info.get("weightedAverageMaturity")
+        ),
+        "data_date": str(hist.index[-1].date()) if len(hist.index) else "",
         **risk,
     }
     result = (metrics, close)

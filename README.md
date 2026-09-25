@@ -1,28 +1,26 @@
-# Laura Gao Quantitative Investment System — Simplified V3
+# Laura Gao Quantitative Investment System
 
 This version intentionally simplifies the earlier project while preserving the most important quantitative mechanics discussed in the project.
 
 ## Included tabs
 
-1. Stock Analyzer — normal operating companies
-2. Special Companies — financial companies and conglomerates such as Berkshire Hathaway
-3. ETF Analyzer — equity and fixed-income ETFs, including reported holdings
-4. Sector Rankings
-5. Portfolio Builder
-6. Portfolio Optimizer
-7. Stress Test
-8. Settings
-9. Operating Reserve Assets
-10. Reserve Optimizer
+1. **Security Analysis & Selection** — one-security analysis, local/custom sector rankings, and mixed candidate portfolio building.
+2. **Portfolio Optimizer** — Minimum Volatility, Maximum Sharpe, Maximum Expected Return, and Laura Goal Portfolio.
+3. **Stress Test**
+4. **Settings**
+5. **Operating Reserve Assets**
+6. **Reserve Optimizer**
 
-The reserve tabs are separate from the competition-oriented portfolio optimizer. Laura's cash-flow assumptions are model-specific planning inputs, not Wharton competition rules.
+The reserve tabs remain separate from competition-oriented portfolio construction. Laura's cash-flow assumptions are model-specific planning inputs, not Wharton competition rules.
 
 ## Main scoring design
 
-- Metric/category scores: **-100 to +100**.
-- Secondary mapped company rating: **0 to 100**.
+- The primary **Main Quantitative Score** is always **-100 to +100**. There is no 0–100 fundamental-rating conversion in the UI.
 - Security profiles now distinguish operating companies, equity ETFs, fixed-income ETFs, and financial conglomerates such as Berkshire Hathaway.
-- Fundamental structure: **30% Growth / 40% Quality / 30% Valuation** by default.
+- Standard stocks use **30% Growth / 40% Quality/Financial Strength / 30% Valuation**.
+- Financial stocks use the dedicated Growth / Financial Quality / Valuation model.
+- Equity ETFs use **35% Return / 35% Risk & Resilience / 30% Diversification & Efficiency**.
+- Fixed-income ETFs use **40% Stability & Risk / 30% Return / 30% Efficiency & Liquidity**.
 - Risk is displayed separately so it is not double-counted inside the fundamental score and again inside portfolio risk.
 - Missing data is not converted to zero; available metrics are reweighted and Data Confidence is displayed.
 
@@ -42,7 +40,7 @@ The reserve tabs are separate from the competition-oriented portfolio optimizer.
 
 Within each branch, the default time weights are **20% 1Y / 50% 3Y / 30% 5Y**. Final Growth uses **35% revenue / 35% EPS / 30% FCF**.
 
-## Tab 2 SSL fix
+## Local sector universe and WInS boundary
 
 The prior version tried to load the public S&P 500 universe from a web page. Some macOS Python installations rejected the website certificate, producing:
 
@@ -52,7 +50,7 @@ This version does **not** use the internet to load the default ranking universe.
 
 The actual stock fundamentals/prices still come from `yfinance` and require internet access. The application sets Python's CA bundle to `certifi` automatically to reduce macOS certificate problems.
 
-The bundled universe is a screening helper, not a representation of the exact WInS eligible list. Tab 2 also supports an uploaded CSV with a `ticker` column and optional `sector` column. Teams must use the official WInS universe and registered-team instructions for competition submissions.
+The bundled universe is a screening helper, not a representation of the exact WInS eligible list. The merged sector-ranking section also supports a custom/WInS CSV with a `ticker` column and optional `sector` column. Opening the bundled section is local-only and makes no internet request. Teams must use the official WInS universe and registered-team instructions for competition submissions.
 
 ## Simpler optimizer
 
@@ -65,7 +63,7 @@ This version uses a transparent **Monte Carlo feasible-portfolio search** instea
 3. Enforce the maximum holding weight while generating the weights.
 4. Permit some holdings to receive 0%.
 5. Calculate expected return, volatility, and Sharpe ratio.
-6. Select the simulated Minimum Volatility, Maximum Sharpe, and Maximum Expected Return portfolios.
+6. Select the simulated Minimum Volatility, Maximum Sharpe, Maximum Expected Return, or Laura Goal Portfolio.
 
 If the constraint is impossible — e.g. 5 stocks with a 15% maximum weight — the app gives a clear error before running.
 
@@ -79,7 +77,7 @@ The application retains Laura's supplied competition cash-flow facts:
 - Beginning 2028: +$150,000
 - Beginning 2033 through beginning 2042: ten $50,000 operating payments
 
-The Portfolio Optimizer shows an assumption-driven 2033 distribution using the 2027 and 2028 starting cash flows. The Operating Reserve Assets and Reserve Optimizer tabs separately calculate the deterministic present value and simulated funding requirements for the ten payments. These are Laura-specific planning tools and are not competition deliverables or official Wharton requirements.
+The Portfolio Optimizer shows an assumption-driven 2033 distribution using only the 2027 and 2028 starting cash flows. The Operating Reserve Assets and Reserve Optimizer tabs separately calculate the zero-yield benchmark, deterministic yield-adjusted PV, and simulated funding requirements for the ten payments. These are Laura-specific planning tools and are not competition deliverables or official Wharton requirements.
 
 Reserve simulations use a reproducible random seed. The seed does not predict markets or improve the result; it only makes the same model inputs generate the same simulated paths so results can be checked and compared. Change it to run a different random sample.
 
@@ -89,6 +87,8 @@ The analyzer does not force every ticker through the same corporate-statement mo
 
 - Equity ETFs use expense ratio, holdings count, portfolio P/E and P/B, distribution yield, and price risk.
 - Fixed-income ETFs use the same fund-level framework and are classified separately so the UI does not describe them as operating companies.
+- VOO, QQQ, VTI, and SPY are always equity ETFs; BIL, SGOV, SHY, IEF, TLT, GOVT, BND, and AGG are fixed-income reserve candidates. Equity dividend yield is never used as a reserve yield.
+- Bond reserve data distinguishes 30-day SEC Yield from Yield to Maturity. Missing duration, maturity, liquidity, or yield data remains N/A.
 - Equity ETF returns now use adjusted-price 1-year, 3-year, and 5-year annualized history.
 - Fixed-income ETFs use narrower return caps and emphasize stability/risk.
 - Financial companies, including Berkshire Hathaway (`BRK-A`/`BRK-B`), use a financial-stock profile emphasizing ROE, ROA, earnings consistency, price-to-book, P/E, earnings growth, and risk.
@@ -128,6 +128,7 @@ These tests do not need live financial-data downloads.
 - The optimizer is a Monte Carlo search approximation, not a proof of a global mathematical optimum.
 - Historical stress tests cannot create history for securities that did not exist. Weight coverage is reported and available holdings are renormalized.
 - The bundled universe is not the official WInS eligibility list.
+- BRK.B and BF.B are normalized to Yahoo symbols BRK-B and BF-B; JPM, BAC, and Berkshire use the financial engine.
 - The 2033 projections and reserve analysis are not substitutes for the official IPS, Trading Notes Analysis, Comprehensive Final Report, or registered-team competition instructions.
 - Wharton states that teams are evaluated on strategy quality, client alignment, research, analysis, and communication; portfolio performance alone does not determine success.
 - Generative AI may support brainstorming, but AI-generated material must not be submitted as a student's own work and must be cited when included.

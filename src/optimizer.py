@@ -116,13 +116,13 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "sharpe": float(stats.loc[i, "sharpe"]),
         }
 
-    # Laura Portfolio balances the preferred Maximum Sharpe portfolio with
+    # Laura Goal Portfolio balances the preferred Maximum Sharpe portfolio with
     # Minimum Volatility while preserving long-only, fully invested weights.
     sharpe_blend = float(laura_settings.get("portfolio_blend", {}).get("maximum_sharpe", 0.50))
     min_vol_blend = float(laura_settings.get("portfolio_blend", {}).get("minimum_volatility", 0.50))
     blend_total = sharpe_blend + min_vol_blend
     if blend_total <= 0:
-        raise ValueError("Laura Portfolio blend weights must have a positive total.")
+        raise ValueError("Laura Goal Portfolio blend weights must have a positive total.")
     sharpe_blend /= blend_total
     min_vol_blend /= blend_total
     laura_w = (W[max_sharpe_i] * sharpe_blend) + (W[min_vol_i] * min_vol_blend)
@@ -134,7 +134,9 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
         "sharpe": laura_sharpe,
         "construction": (
             f"{sharpe_blend:.1%} Maximum Sharpe + "
-            f"{min_vol_blend:.1%} Minimum Volatility"
+            f"{min_vol_blend:.1%} Minimum Volatility; "
+            f"reserve objective reviewed separately at "
+            f"{float(laura_settings.get('goal_portfolio_reserve_target', 0.995)):.1%}"
         ),
     }
 
@@ -148,7 +150,7 @@ def monte_carlo_optimize(price_df: pd.DataFrame, cfg: dict) -> dict:
             "Minimum Volatility": pack(min_vol_i),
             "Maximum Sharpe": pack(max_sharpe_i),
             "Maximum Expected Return": pack(max_return_i),
-            "Laura Portfolio": laura_portfolio,
+            "Laura Goal Portfolio": laura_portfolio,
         },
     }
 

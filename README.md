@@ -81,6 +81,8 @@ The application retains Laura's supplied competition cash-flow facts:
 
 The Portfolio Optimizer shows an assumption-driven 2033 distribution using the 2027 and 2028 starting cash flows. The Operating Reserve Assets and Reserve Optimizer tabs separately calculate the deterministic present value and simulated funding requirements for the ten payments. These are Laura-specific planning tools and are not competition deliverables or official Wharton requirements.
 
+Reserve simulations use a reproducible random seed. The seed does not predict markets or improve the result; it only makes the same model inputs generate the same simulated paths so results can be checked and compared. Change it to run a different random sample.
+
 ## ETF and Berkshire analysis
 
 The analyzer does not force every ticker through the same corporate-statement model:

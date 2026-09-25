@@ -65,6 +65,13 @@ if "reserve_assets" not in st.session_state:
 cfg = st.session_state.cfg
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_batch_analyze(tickers: tuple[str, ...], cache_dir: str, cache_ttl_hours: float):
+    """Cache the expensive multi-ticker Yahoo analysis for the current data window."""
+    data_cfg = {"data": {"cache_dir": cache_dir, "cache_ttl_hours": cache_ttl_hours}}
+    return batch_analyze(tickers, data_cfg)
+
+
 def fmt_num(x, digits=2):
     try:
         x = float(x)
@@ -402,21 +409,28 @@ with tabs[3]:
 # ------------------------- TAB 5 -------------------------
 with tabs[4]:
     st.subheader("Portfolio Builder")
+    if "t3_tickers" not in st.session_state:
+        st.session_state.t3_tickers = ", ".join(st.session_state.candidates)
     text = st.text_area(
         "Candidate tickers (comma or new-line separated)",
-        value=", ".join(st.session_state.candidates),
         height=110,
         key="t3_tickers",
     )
     if st.button("Save candidate list", key="t3_save"):
         tickers = [x.strip().upper() for x in text.replace("\n", ",").split(",") if x.strip()]
         st.session_state.candidates = list(dict.fromkeys(tickers))
+        st.session_state.t3_tickers = ", ".join(st.session_state.candidates)
         st.success(f"Saved {len(st.session_state.candidates)} candidates.")
 
     if st.button("Download candidate data", key="t3_download_data"):
         try:
             with st.spinner("Downloading candidate fundamentals and prices..."):
-                raw, pmap, errors = batch_analyze(st.session_state.candidates, cfg)
+                tickers = tuple(st.session_state.candidates)
+                raw, pmap, errors = cached_batch_analyze(
+                    tickers,
+                    str(cfg["data"]["cache_dir"]),
+                    float(cfg["data"]["cache_ttl_hours"]),
+                )
                 if not raw.empty:
                     scored = pd.DataFrame([score_row(r.to_dict()) for _, r in raw.iterrows()])
                 else:
@@ -713,6 +727,10 @@ with tabs[9]:
     simulations = max(100_000, int(cfg["laura"].get("reserve_simulations", 100_000)))
     configured_seed = int(cfg["laura"].get("reserve_simulation_seed", 20260924))
     seed = st.number_input("Reproducible simulation seed", min_value=1, value=configured_seed, step=1, key="t10_reserve_seed")
+    st.caption(
+        "The seed initializes the pseudo-random paths. Keeping the same seed and inputs makes "
+        "results repeatable; changing it creates a different, equally valid sample of simulated paths."
+    )
     try:
         normalized = normalize_reserve_weights(st.session_state.reserve_assets)
         reserve_yield = weighted_reserve_yield(normalized)

@@ -78,19 +78,23 @@ def funding_success_probability(
         raise ValueError("Final reserve analysis requires at least 100,000 simulations.")
     if starting_reserve < 0 or volatility < 0 or reserve_yield <= -1:
         raise ValueError("Invalid reserve assumptions.")
-    rng = np.random.default_rng(seed)
-    values = np.full(simulations, float(starting_reserve))
-    survived = np.ones(simulations, dtype=bool)
+    shocks = np.random.default_rng(seed).normal(
+        reserve_yield - 0.5 * volatility**2,
+        volatility,
+        (simulations, PAYMENT_COUNT - 1),
+    )
+    return _funding_success_from_shocks(starting_reserve, shocks)
+
+
+def _funding_success_from_shocks(starting_reserve: float, shocks: np.ndarray) -> float:
+    """Evaluate fixed random paths so reserve bisection is fast and reproducible."""
+    values = np.full(shocks.shape[0], float(starting_reserve))
+    survived = np.ones(shocks.shape[0], dtype=bool)
     for year in range(PAYMENT_COUNT):
         survived &= values >= PAYMENT
         values = np.where(survived, values - PAYMENT, 0.0)
         if year < PAYMENT_COUNT - 1:
-            shocks = rng.normal(
-                reserve_yield - 0.5 * volatility**2,
-                volatility,
-                simulations,
-            )
-            values = np.where(survived, values * np.exp(shocks), 0.0)
+            values = np.where(survived, values * np.exp(shocks[:, year]), 0.0)
     return float(np.mean(survived))
 
 
@@ -103,17 +107,25 @@ def required_reserves(
 ) -> pd.DataFrame:
     """Find minimum starting reserves by deterministic bisection on simulations."""
     rows = []
-    upper = deterministic_reserve_pv(reserve_yield) + LIABILITY
+    rng = np.random.default_rng(seed)
+    shocks = rng.normal(
+        reserve_yield - 0.5 * volatility**2,
+        volatility,
+        (simulations, PAYMENT_COUNT - 1),
+    )
+    upper = max(deterministic_reserve_pv(reserve_yield) + LIABILITY, LIABILITY)
     for target in targets:
         lo, hi = 0.0, upper
-        for _ in range(45):
+        while _funding_success_from_shocks(hi, shocks) < target:
+            hi *= 2.0
+        for _ in range(32):
             mid = (lo + hi) / 2
-            success = funding_success_probability(mid, reserve_yield, volatility, simulations, seed)
+            success = _funding_success_from_shocks(mid, shocks)
             if success >= target:
                 hi = mid
             else:
                 lo = mid
-        success = funding_success_probability(hi, reserve_yield, volatility, simulations, seed)
+        success = _funding_success_from_shocks(hi, shocks)
         rows.append({
             "funding_target": target,
             "failure_rate": 1.0 - target,

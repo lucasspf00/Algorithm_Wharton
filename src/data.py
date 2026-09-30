@@ -161,6 +161,18 @@ def _safe_num(x, default=np.nan) -> float:
         return default
 
 
+def _expense_ratio_fraction(info: dict) -> float:
+    """Normalize Yahoo's percentage-point expense-ratio fields to decimals."""
+    raw = _safe_num(info.get("annualReportExpenseRatio"))
+    if not np.isfinite(raw):
+        raw = _safe_num(info.get("netExpenseRatio"))
+    if not np.isfinite(raw):
+        return np.nan
+    # Yahoo commonly reports these as percent points (e.g. VOO 0.03 for 0.03%),
+    # while fractional values such as 0.0003 are already decimal ratios.
+    return raw / 100.0 if raw > 0.01 else raw
+
+
 def _price_risk(prices: pd.Series, beta: float) -> dict:
     p = prices.dropna()
     if len(p) < 40:
@@ -295,6 +307,7 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "ticker": ticker,
         "company": info.get("longName") or info.get("shortName") or ticker,
         "sector": info.get("sector") or "Unknown",
+        "category": info.get("category") or info.get("industry") or "N/A",
         "industry": info.get("industry") or "Unknown",
         **profile,
         "current_price": float(close.iloc[-1]),
@@ -332,7 +345,7 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "price_to_book": pb,
         "ev_to_ebitda": eve,
         # Fund-level fields are populated for ETFs where Yahoo provides them.
-        "expense_ratio": _safe_num(info.get("annualReportExpenseRatio") or info.get("netExpenseRatio")),
+        "expense_ratio": _expense_ratio_fraction(info),
         "total_assets": _safe_num(info.get("totalAssets")),
         "holdings_count": _safe_num(info.get("numberOfHoldings")),
         "portfolio_pe": _safe_num(info.get("trailingPE")),

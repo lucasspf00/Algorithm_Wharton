@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import load_config
 from src.scoring import normalize_symmetric, score_security
 from src.optimizer import _bounded_weights, deterministic_reserve_requirement, laura_value_2033, simulate_2033_distribution
-from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type, reserve_asset_profile
+from src.data import load_local_universe, _security_profile, normalize_ticker, detect_asset_type, reserve_asset_profile, _expense_ratio_fraction
 from src.stress import hypothetical_stress
 from src.reserve import (
     deterministic_reserve_pv,
@@ -38,12 +38,27 @@ scored = score_security(metrics, cfg)
 assert -100 <= scored["fundamental_score"] <= 100
 assert -100 <= scored["main_score"] <= 100
 assert scored["data_confidence"] > 90
+assert np.isclose(
+    scored["main_score"],
+    .30 * scored["growth_score"] + .40 * scored["quality_score"] + .30 * scored["valuation_score"],
+)
+assert np.isclose(
+    scored["valuation_score"],
+    sum(
+        cfg["scoring"]["valuation_weights"][key] * scored["metric_scores"][key]
+        for key in cfg["scoring"]["valuation_weights"]
+    ) / sum(cfg["scoring"]["valuation_weights"].values()),
+)
+cheaper = score_security({**metrics, "trailing_pe": 15, "forward_pe": 14}, cfg)
+assert cheaper["valuation_score"] > scored["valuation_score"]
 
 assert _security_profile("SPY", {"quoteType": "ETF", "category": "Large Blend"})["analysis_profile"] == "equity_etf"
 assert _security_profile("TLT", {"quoteType": "ETF", "category": "Intermediate Government"})["analysis_profile"] == "fixed_income_etf"
 assert _security_profile("BRK-B", {"quoteType": "EQUITY", "longName": "Berkshire Hathaway Inc."})["analysis_profile"] == "financial_conglomerate"
 assert normalize_ticker("BRK.B") == "BRK-B"
 assert normalize_ticker("BF.B") == "BF-B"
+assert np.isclose(_expense_ratio_fraction({"annualReportExpenseRatio": .03}), .0003)
+assert np.isclose(_expense_ratio_fraction({"annualReportExpenseRatio": .0003}), .0003)
 assert detect_asset_type("JPM", {"quoteType": "EQUITY", "sector": "Financial Services"}) == "financial_stock"
 for ticker in ("JPM", "BAC"):
     assert _security_profile(ticker, {"quoteType": "EQUITY"})["analysis_profile"] == "financial_company"
@@ -64,6 +79,12 @@ assert etf_scored["analysis_profile"] == "equity_etf"
 assert etf_scored["data_confidence"] > 80
 assert -100 <= etf_scored["main_score"] <= 100
 assert "Equity ETF" in etf_scored["scoring_engine"]
+assert np.isclose(
+    etf_scored["main_score"],
+    .35 * etf_scored["growth_score"]
+    + .35 * etf_scored["quality_score"]
+    + .30 * etf_scored["valuation_score"],
+)
 
 brk_scored = score_security({
     "analysis_profile": "financial_conglomerate", "revenue_growth_1y": 0.05,
@@ -71,7 +92,14 @@ brk_scored = score_security({
     "price_to_book": 1.6, "trailing_pe": 22, "annualized_volatility": 0.18,
     "max_drawdown": 0.25, "downside_deviation": 0.12, "beta": 0.9,
 }, cfg)
-assert brk_scored["analysis_profile"] == "financial_stock"
+assert brk_scored["analysis_profile"] == "financial_conglomerate"
+assert brk_scored["category_labels"]["quality"] == "Financial Quality"
+assert np.isclose(
+    brk_scored["main_score"],
+    .30 * brk_scored["growth_score"]
+    + .40 * brk_scored["quality_score"]
+    + .30 * brk_scored["valuation_score"],
+)
 assert np.isfinite(brk_scored["fundamental_score"])
 
 financial_scored = score_security({
@@ -83,6 +111,23 @@ financial_scored = score_security({
     "annualized_volatility": .20, "max_drawdown": .30, "downside_deviation": .14, "beta": 1.0,
 }, cfg)
 assert financial_scored["analysis_profile"] == "financial_stock"
+financial_sparse = score_security({
+    "analysis_profile": "financial_company",
+    "revenue_growth_1y": .05,
+    "return_on_equity": .12,
+    "return_on_assets": .01,
+    "net_margin": .20,
+    "earnings_consistency": .90,
+    "trailing_pe": 15,
+    "price_to_book": 1.5,
+}, cfg)
+assert financial_sparse["data_confidence"] < financial_scored["data_confidence"]
+assert np.isclose(
+    financial_scored["main_score"],
+    .30 * financial_scored["growth_score"]
+    + .40 * financial_scored["quality_score"]
+    + .30 * financial_scored["valuation_score"],
+)
 
 fixed_scored = score_security({
     "analysis_profile": "fixed_income_etf", "total_return_1y": .04,
@@ -91,6 +136,12 @@ fixed_scored = score_security({
     "downside_deviation": .04, "beta": .1,
 }, cfg)
 assert fixed_scored["analysis_profile"] == "fixed_income_etf"
+assert np.isclose(
+    fixed_scored["main_score"],
+    .30 * fixed_scored["growth_score"]
+    + .40 * fixed_scored["quality_score"]
+    + .30 * fixed_scored["valuation_score"],
+)
 
 rng = np.random.default_rng(1)
 w = _bounded_weights(8, 0.20, rng)

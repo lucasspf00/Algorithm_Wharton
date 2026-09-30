@@ -87,6 +87,14 @@ def fmt_num(value, digits=2):
         return "N/A"
 
 
+def fmt_score(value, digits=1):
+    try:
+        value = float(value)
+        return f"{value:+.{digits}f}" if np.isfinite(value) else "N/A"
+    except Exception:
+        return "N/A"
+
+
 def fmt_pct(value, digits=1):
     try:
         value = float(value)
@@ -168,29 +176,95 @@ def score_label(scored, key):
     return scored.get("category_labels", {}).get(key, key.title())
 
 
+def valuation_breakdown(metrics: dict, scored: dict) -> tuple[str, pd.DataFrame, float]:
+    """Return the exact model inputs and weighted points for the valuation/efficiency branch."""
+    profile = scored["analysis_profile"]
+    if profile == "operating_company":
+        labels = {
+            "trailing_pe": ("Trailing P/E", cfg["scoring"]["valuation_weights"]["trailing_pe"]),
+            "forward_pe": ("Forward P/E", cfg["scoring"]["valuation_weights"]["forward_pe"]),
+            "price_to_sales": ("P/S", cfg["scoring"]["valuation_weights"]["price_to_sales"]),
+            "price_to_book": ("P/B", cfg["scoring"]["valuation_weights"]["price_to_book"]),
+            "ev_to_ebitda": ("EV/EBITDA", cfg["scoring"]["valuation_weights"]["ev_to_ebitda"]),
+        }
+    elif profile == "financial_conglomerate":
+        labels = {
+            "price_to_book": ("P/B", .60),
+            "trailing_pe": ("Trailing P/E", .40),
+        }
+    elif profile == "financial_stock":
+        labels = {
+            "trailing_pe": ("Trailing P/E", .30),
+            "forward_pe": ("Forward P/E", .25),
+            "price_to_book": ("P/B", .30),
+            "earnings_yield": ("Earnings yield", .15),
+        }
+    else:
+        labels = {
+            "expense_ratio": ("Expense ratio", .60),
+            "holdings_count": ("Holdings count", .40),
+        }
+    score_key_map = {
+        "trailing_pe": "trailing_pe",
+        "forward_pe": "forward_pe",
+        "price_to_sales": "price_to_sales",
+        "price_to_book": "price_to_book",
+        "ev_to_ebitda": "ev_to_ebitda",
+        "earnings_yield": "earnings_yield",
+        "expense_ratio": "expense_ratio",
+        "holdings_count": "holdings_count",
+    }
+    rows = []
+    for key, (label, configured_weight) in labels.items():
+        raw = metrics.get(key, np.nan)
+        points = scored["metric_scores"].get(score_key_map[key], np.nan)
+        rows.append({
+            "Input": label,
+            "Observed value": format_metric(key, raw),
+            "Normalized points": fmt_num(points, 1),
+            "Configured weight": fmt_pct(configured_weight),
+            "_score": points,
+            "_weight": configured_weight,
+        })
+    valid_weight = sum(row["_weight"] for row in rows if np.isfinite(row["_score"]))
+    for row in rows:
+        effective_weight = row["_weight"] / valid_weight if valid_weight and np.isfinite(row["_score"]) else 0.0
+        row["Effective weight"] = fmt_pct(effective_weight)
+        row["Points contributed"] = fmt_num(row["_score"] * effective_weight, 1) if np.isfinite(row["_score"]) else "N/A"
+    title = score_label(scored, "valuation")
+    if profile in {"equity_etf", "fixed_income_etf"}:
+        title = f"{title} inputs (portfolio P/E and P/B are context only)"
+    frame = pd.DataFrame(rows).drop(columns=["_score", "_weight"])
+    return title, frame, float(scored["valuation_score"])
+
+
 def show_security(metrics: dict, scored: dict, holdings: pd.DataFrame | None = None):
     engine = scored.get("scoring_engine", scored.get("analysis_profile", "Unknown"))
-    st.markdown(
-        f"<div style='font-size:1.05rem'><b>{metrics.get('company', metrics.get('ticker'))}</b> · "
-        f"{metrics.get('sector', metrics.get('category', 'Unknown'))} · "
-        f"{metrics.get('asset_class', 'Unknown')}</div>",
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"**{metrics.get('company', metrics.get('ticker'))}** · `{metrics.get('ticker', 'N/A')}`")
     st.caption(f"Detected scoring engine: {engine}")
+    main_score = scored["main_score"]
+    main_score_text = f"{main_score:+.1f}" if np.isfinite(main_score) else "N/A"
     st.markdown(
         f"<div style='font-size:3rem;font-weight:700'>Main Quantitative Score: "
-        f"{scored['main_score']:+.1f} (range -100 to +100)</div>",
+        f"{main_score_text} (range -100 to +100)</div>",
         unsafe_allow_html=True,
     )
     st.caption("Main score is always -100 to +100. Scores from different engines are not directly comparable.")
+    st.markdown(
+        f"**Sector:** {metrics.get('sector', 'N/A')}　|　"
+        f"**Industry / fund category:** {metrics.get('category', metrics.get('industry', 'N/A'))}　|　"
+        f"**Asset type:** {metrics.get('asset_class', 'N/A')}"
+    )
     labels = [score_label(scored, key) for key in ("growth", "quality", "valuation")]
-    c = st.columns(6)
-    c[0].metric(labels[0], f"{scored['growth_score']:+.1f}")
-    c[1].metric(labels[1], f"{scored['quality_score']:+.1f}")
-    c[2].metric(labels[2], f"{scored['valuation_score']:+.1f}")
-    c[3].metric("Risk & Resilience", f"{scored['risk_score']:+.1f}")
+    c = st.columns(5)
+    c[0].metric(labels[0], fmt_score(scored["growth_score"]))
+    c[1].metric(labels[1], fmt_score(scored["quality_score"]))
+    c[2].metric(labels[2], fmt_score(scored["valuation_score"]))
+    c[3].metric("Risk & Resilience", fmt_score(scored["risk_score"]))
     c[4].metric("Data Confidence", fmt_pct(scored["data_confidence"] / 100))
-    c[5].metric("Sector / Category", str(metrics.get("sector", metrics.get("category", "N/A"))))
+    val_title, val_frame, val_score = valuation_breakdown(metrics, scored)
+    with st.expander(f"{val_title} — branch score {fmt_num(val_score, 1)}", expanded=True):
+        st.dataframe(val_frame, hide_index=True, use_container_width=True)
     growth_keys = [
         ("Revenue 1Y", "revenue_growth_1y"), ("Revenue 3Y", "revenue_growth_3y"), ("Revenue 5Y", "revenue_growth_5y"),
         ("EPS 1Y", "eps_growth_1y"), ("EPS 3Y", "eps_growth_3y"), ("EPS 5Y", "eps_growth_5y"),
@@ -315,7 +389,7 @@ with tabs[0]:
                 st.session_state.candidate_errors = errors
                 st.session_state.optimizer_result = None
         if not st.session_state.candidate_raw.empty:
-            columns = ["ticker", "company", "main_score", "scoring_engine", "asset_class", "sector", "risk_score", "data_confidence"]
+            columns = ["ticker", "company", "main_score", "scoring_engine", "asset_class", "sector", "category", "risk_score", "data_confidence"]
             show = st.session_state.candidate_raw[[c for c in columns if c in st.session_state.candidate_raw]].rename(columns={"data_confidence": "Data Confidence"})
             st.dataframe(format_frame(show), hide_index=True, use_container_width=True)
             st.write(f"Usable price series: {st.session_state.candidate_prices.shape[1]}")

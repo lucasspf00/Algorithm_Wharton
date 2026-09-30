@@ -186,12 +186,21 @@ def _score_operating_company(metrics: Mapping[str, float], cfg: dict, profile: s
 
 
 def _score_financial_stock(metrics: Mapping[str, float], cfg: dict) -> dict:
+    revenue, revenue_coverage, revenue_scores = _growth_branch(metrics, "revenue", cfg)
+    earnings, earnings_coverage, earnings_scores = _growth_branch(metrics, "eps", cfg)
+    net_income, income_coverage, income_scores = _growth_branch(metrics, "net_income", cfg)
     growth_values = {
-        "revenue": _growth_branch(metrics, "revenue", cfg)[0],
-        "earnings": _growth_branch(metrics, "eps", cfg)[0],
-        "net_income": _growth_branch(metrics, "net_income", cfg)[0],
+        "revenue": revenue,
+        "earnings": earnings,
+        "net_income": net_income,
     }
+    growth_weights = {"revenue": .4, "earnings": .4, "net_income": .2}
     growth, growth_cov = weighted_available(growth_values, {"revenue": .4, "earnings": .4, "net_income": .2})
+    growth_cov = (
+        growth_weights["revenue"] * revenue_coverage
+        + growth_weights["earnings"] * earnings_coverage
+        + growth_weights["net_income"] * income_coverage
+    ) / sum(growth_weights.values())
     quality_values = {
         "return_on_equity": normalize_piecewise(metrics.get("return_on_equity", np.nan), .02, .10, .20),
         "return_on_assets": normalize_piecewise(metrics.get("return_on_assets", np.nan), .002, .01, .03),
@@ -211,7 +220,14 @@ def _score_financial_stock(metrics: Mapping[str, float], cfg: dict) -> dict:
         "trailing_pe": .30, "forward_pe": .25, "price_to_book": .30, "earnings_yield": .15,
     })
     risk_scores, risk_score, risk_cov = _score_risk(metrics)
-    scores = {**quality_values, **valuation_values, **{f"risk::{k}": v for k, v in risk_scores.items()}}
+    scores = {
+        **revenue_scores,
+        **earnings_scores,
+        **income_scores,
+        **quality_values,
+        **valuation_values,
+        **{f"risk::{k}": v for k, v in risk_scores.items()},
+    }
     return _finish_score(scores, {"growth": growth, "quality": quality, "valuation": valuation},
                          {"growth": growth_cov, "quality": quality_cov, "valuation": valuation_cov},
                          risk_score, risk_cov, cfg, "financial_stock")
@@ -272,7 +288,8 @@ def _score_fund(metrics: Mapping[str, float], cfg: dict, profile: str) -> dict:
 
 def _score_conglomerate(metrics: Mapping[str, float], cfg: dict) -> dict:
     """Use book value, ROE, earnings growth, and balance-sheet metrics for Berkshire."""
-    result = _score_operating_company(metrics, cfg, "financial_conglomerate")
+    result = _score_financial_stock(metrics, cfg)
+    result["analysis_profile"] = "financial_conglomerate"
     # Berkshire's book value and ROE are more informative than operating margin.
     quality = weighted_available(
         {
@@ -289,15 +306,26 @@ def _score_conglomerate(metrics: Mapping[str, float], cfg: dict) -> dict:
     )
     result["quality_score"] = quality[0]
     result["valuation_score"] = valuation[0]
+    category_weights = cfg["scoring"]["category_weights"]
+    revenue_cov = _growth_branch(metrics, "revenue", cfg)[1]
+    earnings_cov = _growth_branch(metrics, "eps", cfg)[1]
+    income_cov = _growth_branch(metrics, "net_income", cfg)[1]
+    growth_cov = .4 * revenue_cov + .4 * earnings_cov + .2 * income_cov
     result["data_confidence"] = (
-        cfg["scoring"]["category_weights"]["growth"] * (1.0 if _finite(result["growth_score"]) else 0.0)
-        + cfg["scoring"]["category_weights"]["quality"] * quality[1]
-        + cfg["scoring"]["category_weights"]["valuation"] * valuation[1]
-    ) / sum(cfg["scoring"]["category_weights"].values()) * 100.0
+        category_weights["growth"] * growth_cov
+        + category_weights["quality"] * quality[1]
+        + category_weights["valuation"] * valuation[1]
+    ) / sum(category_weights.values()) * 100.0
     result["fundamental_score"], _ = weighted_available(
         {"growth": result["growth_score"], "quality": result["quality_score"], "valuation": result["valuation_score"]},
         cfg["scoring"]["category_weights"],
     )
+    result["main_score"] = result["fundamental_score"]
+    result["category_labels"] = {
+        "growth": "Growth",
+        "quality": "Financial Quality",
+        "valuation": "Valuation",
+    }
     return result
 
 
@@ -306,7 +334,11 @@ def score_security(metrics: Mapping[str, float], cfg: dict) -> dict:
     if profile in {"equity_etf", "fixed_income_etf"}:
         return _score_fund(metrics, cfg, profile)
     if profile in {"financial_conglomerate", "financial_company"}:
-        result = _score_financial_stock(metrics, cfg)
+        result = (
+            _score_conglomerate(metrics, cfg)
+            if profile == "financial_conglomerate"
+            else _score_financial_stock(metrics, cfg)
+        )
         result["category_labels"] = {
             "growth": "Growth",
             "quality": "Financial Quality",

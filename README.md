@@ -23,6 +23,10 @@ The reserve tabs remain separate from competition-oriented portfolio constructio
 - Fixed-income ETFs use **40% Stability & Risk / 30% Return / 30% Efficiency & Liquidity**.
 - Risk is displayed separately so it is not double-counted inside the fundamental score and again inside portfolio risk.
 - Missing data is not converted to zero; available metrics are reweighted and Data Confidence is displayed.
+- The one-security view displays sector and industry/fund category immediately under the Main Quantitative Score, and expands the valuation/efficiency inputs into raw values, normalized points, configured weights, and effective weighted point contributions.
+- Yahoo ETF expense-ratio values reported in percentage points (for example, `0.03` for 0.03%) are normalized to decimal fractions before scoring.
+- Financial-stock Data Confidence reflects the fraction of each 1Y/3Y/5Y growth horizon actually available; one available horizon does not count as a complete growth branch.
+- Valuation point scores reverse the direction for lower-is-better multiples (P/E, P/S, P/B, EV/EBITDA), while financial earnings yield scores higher when larger. Available valuation inputs are proportionally reweighted; absent fields remain N/A and do not count as zero.
 
 ### Growth normalization caps
 

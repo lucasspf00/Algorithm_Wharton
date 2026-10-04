@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
+from datetime import date
 
 import certifi
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 
 os.environ.setdefault("SSL_CERT_FILE", certifi.where())
@@ -18,80 +18,77 @@ from src.data import (
     analyze_security,
     batch_analyze,
     download_price_period,
-    etf_holdings,
-    load_local_universe,
     normalize_ticker,
     price_frame,
 )
-try:
-    from src.data import reserve_asset_profile
-except ImportError:
-    def reserve_asset_profile(ticker: str) -> str:
-        """Compatibility fallback for a stale Streamlit data module."""
-        symbol = normalize_ticker(ticker)
-        if symbol in {"BIL", "SGOV", "SHY", "IEF", "TLT", "GOVT", "BND", "AGG"}:
-            return "fixed_income_etf"
-        if symbol in {"VOO", "QQQ", "VTI", "SPY"}:
-            return "equity_etf"
-        return "unknown"
-from src.optimizer import laura_value_2033, monte_carlo_optimize, simulate_2033_distribution
-from src.reserve import (
-    LIABILITY,
-    PAYMENT,
-    PAYMENT_COUNT,
-    deterministic_reserve_pv,
-    normalize_reserve_weights,
-    required_reserves,
-    weighted_reserve_yield,
+from src.optimizer import (
+    annualized_expected_returns,
+    laura_value_2033,
+    monte_carlo_optimize,
+    prepare_returns,
+    simulate_2033_distribution,
 )
 from src.scoring import score_security
 from src.stress import HISTORICAL_WINDOWS, historical_portfolio_stress, hypothetical_stress
 
 st.set_page_config(page_title="Laura Gao Quant System", layout="wide")
+st.title("Laura Gao Quantitative Investment System")
+st.caption("Four-tab security scoring, portfolio construction, stress testing, and decision-support app.")
+st.info("Research support for the Wharton Global High School Investment Competition. Official competition materials and team instructions remain authoritative.")
 
 if "cfg" not in st.session_state:
     st.session_state.cfg = load_config()
 cfg = st.session_state.cfg
-for key, default in {
-    "candidates": ["AAPL", "MSFT", "GOOGL", "AMZN", "JPM", "LLY", "XOM", "NEE"],
+defaults = {
+    "candidate_tickers": ["AAPL", "MSFT", "GOOGL", "AMZN", "JPM", "LLY", "XOM", "NEE"],
     "candidate_raw": pd.DataFrame(),
     "candidate_prices": pd.DataFrame(),
     "candidate_errors": {},
+    "candidate_scored": pd.DataFrame(),
     "optimizer_result": None,
-    "selected_portfolio": "Maximum Sharpe",
     "single_result": None,
-    "sector_ranked": pd.DataFrame(),
-    "sector_errors": {},
-    "reserve_optimizer_result": None,
-}.items():
+    "selected_portfolio": "Laura Goal Portfolio",
+    "hist_stress": None,
+}
+for key, value in defaults.items():
     if key not in st.session_state:
-        st.session_state[key] = default
-if "reserve_assets" not in st.session_state:
-    st.session_state.reserve_assets = pd.DataFrame([
-        {"asset": "SGOV", "asset_type": "Fixed-income / Treasury ETF", "weight": .40, "sec_yield_30d": np.nan, "yield_to_maturity": np.nan, "effective_duration": np.nan, "weighted_average_maturity": np.nan, "expense_ratio": np.nan, "volatility": np.nan, "drawdown": np.nan, "dollar_volume_30d": np.nan, "treasury_credit_exposure": "", "data_date": ""},
-        {"asset": "BIL", "asset_type": "Fixed-income / Treasury ETF", "weight": .30, "sec_yield_30d": np.nan, "yield_to_maturity": np.nan, "effective_duration": np.nan, "weighted_average_maturity": np.nan, "expense_ratio": np.nan, "volatility": np.nan, "drawdown": np.nan, "dollar_volume_30d": np.nan, "treasury_credit_exposure": "", "data_date": ""},
-        {"asset": "SHY", "asset_type": "Fixed-income / Treasury ETF", "weight": .30, "sec_yield_30d": np.nan, "yield_to_maturity": np.nan, "effective_duration": np.nan, "weighted_average_maturity": np.nan, "expense_ratio": np.nan, "volatility": np.nan, "drawdown": np.nan, "dollar_volume_30d": np.nan, "treasury_credit_exposure": "", "data_date": ""},
-    ])
+        st.session_state[key] = value
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
-def cached_batch(tickers: tuple[str, ...], cache_dir: str, ttl: float):
-    return batch_analyze(tickers, {"data": {"cache_dir": cache_dir, "cache_ttl_hours": ttl}})
+def reset_settings():
+    st.session_state.cfg = load_config()
+    st.session_state.optimizer_result = None
+    single = st.session_state.single_result
+    if single:
+        st.session_state.single_result = (single[0], score_security(single[0], st.session_state.cfg))
+    raw = st.session_state.candidate_raw
+    if not raw.empty:
+        st.session_state.candidate_scored = pd.DataFrame(
+            [{**row.to_dict(), **score_security(row.to_dict(), st.session_state.cfg)} for _, row in raw.iterrows()]
+        )
+    for widget_key in (
+        "settings_max_weight", "settings_equity_min", "settings_equity_max",
+        "settings_fixed_min", "settings_fixed_max", "settings_sector_tolerance",
+        "settings_risk_free", "settings_target_return", "settings_benchmark",
+        "settings_liquidity", "settings_duration_target", "settings_lookback", "settings_simulations",
+        "settings_expense_strong", "settings_expense_neutral", "settings_expense_weak",
+    ):
+        st.session_state.pop(widget_key, None)
 
 
 def fmt_num(value, digits=2):
     try:
         value = float(value)
         return f"{value:,.{digits}f}" if np.isfinite(value) else "N/A"
-    except Exception:
+    except (TypeError, ValueError):
         return "N/A"
 
 
-def fmt_score(value, digits=1):
+def fmt_score(value):
     try:
         value = float(value)
-        return f"{value:+.{digits}f}" if np.isfinite(value) else "N/A"
-    except Exception:
+        return f"{value:+.1f}" if np.isfinite(value) else "N/A"
+    except (TypeError, ValueError):
         return "N/A"
 
 
@@ -99,340 +96,396 @@ def fmt_pct(value, digits=1):
     try:
         value = float(value)
         return f"{value * 100:.{digits}f}%" if np.isfinite(value) else "N/A"
-    except Exception:
+    except (TypeError, ValueError):
         return "N/A"
 
 
-def fmt_money(value):
+def fmt_money(value, digits=0):
     try:
         value = float(value)
-        return f"${value:,.0f}" if np.isfinite(value) else "N/A"
-    except Exception:
+        return f"${value:,.{digits}f}" if np.isfinite(value) else "N/A"
+    except (TypeError, ValueError):
         return "N/A"
 
 
-def pct_input(label, decimal_value, min_percent=-100.0, max_percent=100.0,
-              step_percent=1.0, key=None) -> float:
-    entered = st.number_input(
-        label,
-        min_value=float(min_percent),
-        max_value=float(max_percent),
-        value=float(decimal_value) * 100,
-        step=float(step_percent),
-        format="%.1f",
-        key=key,
-    )
-    return float(entered) / 100
-
-
-PERCENT_KEYS = {
-    "revenue_growth_1y", "revenue_growth_3y", "revenue_growth_5y",
-    "eps_growth_1y", "eps_growth_3y", "eps_growth_5y",
-    "fcf_growth_1y", "fcf_growth_3y", "fcf_growth_5y",
-    "net_income_growth_1y", "net_income_growth_3y", "net_income_growth_5y",
-    "operating_margin", "net_margin", "return_on_equity", "return_on_assets",
-    "earnings_consistency", "earnings_yield", "dividend_yield", "distribution_yield",
-    "annualized_volatility", "max_drawdown", "downside_deviation", "expense_ratio",
-    "total_return_1y", "total_return_3y", "total_return_5y", "sec_yield_30d",
-    "yield_to_maturity",
-}
-
-
-def format_metric(key, value):
-    if key in PERCENT_KEYS:
-        return fmt_pct(value)
-    if key in {"current_price", "total_assets", "dollar_volume_30d"}:
-        return fmt_money(value)
-    return fmt_num(value)
-
-
-def format_frame(frame: pd.DataFrame) -> pd.DataFrame:
-    out = frame.copy()
-    for column in out.columns:
-        if column.lower() in {"weight", "data confidence", "sector percentile"}:
-            out[column] = out[column].map(lambda x: fmt_pct(float(x) / 100 if column.lower() != "weight" else x))
-    return out
+def pct_input(label, value, low, high, step, key):
+    return float(st.number_input(
+        label, min_value=float(low), max_value=float(high),
+        value=float(value) * 100, step=float(step), format="%.2f", key=key,
+    )) / 100
 
 
 def score_row(metrics: dict) -> dict:
-    scored = score_security(metrics, cfg)
-    return {
-        **metrics,
-        "main_score": scored["main_score"],
-        "fundamental_score": scored["main_score"],
-        "growth_score": scored["growth_score"],
-        "quality_score": scored["quality_score"],
-        "valuation_score": scored["valuation_score"],
-        "risk_score": scored["risk_score"],
-        "data_confidence": scored["data_confidence"],
-        "analysis_profile": scored["analysis_profile"],
-        "scoring_engine": scored["scoring_engine"],
-        "category_labels": scored.get("category_labels", {}),
-        "metric_scores": scored["metric_scores"],
-    }
+    return {**metrics, **score_security(metrics, cfg)}
 
 
-def score_label(scored, key):
-    return scored.get("category_labels", {}).get(key, key.title())
-
-
-def valuation_breakdown(metrics: dict, scored: dict) -> tuple[str, pd.DataFrame, float]:
-    """Return the exact model inputs and weighted points for the valuation/efficiency branch."""
-    profile = scored["analysis_profile"]
-    if profile == "operating_company":
-        labels = {
-            "trailing_pe": ("Trailing P/E", cfg["scoring"]["valuation_weights"]["trailing_pe"]),
-            "forward_pe": ("Forward P/E", cfg["scoring"]["valuation_weights"]["forward_pe"]),
-            "price_to_sales": ("P/S", cfg["scoring"]["valuation_weights"]["price_to_sales"]),
-            "price_to_book": ("P/B", cfg["scoring"]["valuation_weights"]["price_to_book"]),
-            "ev_to_ebitda": ("EV/EBITDA", cfg["scoring"]["valuation_weights"]["ev_to_ebitda"]),
-        }
-    elif profile == "financial_conglomerate":
-        labels = {
-            "price_to_book": ("P/B", .60),
-            "trailing_pe": ("Trailing P/E", .40),
-        }
-    elif profile == "financial_stock":
-        labels = {
-            "trailing_pe": ("Trailing P/E", .30),
-            "forward_pe": ("Forward P/E", .25),
-            "price_to_book": ("P/B", .30),
-            "earnings_yield": ("Earnings yield", .15),
-        }
-    else:
-        labels = {
-            "expense_ratio": ("Expense ratio", .60),
-            "holdings_count": ("Holdings count", .40),
-        }
-    score_key_map = {
-        "trailing_pe": "trailing_pe",
-        "forward_pe": "forward_pe",
-        "price_to_sales": "price_to_sales",
-        "price_to_book": "price_to_book",
-        "ev_to_ebitda": "ev_to_ebitda",
-        "earnings_yield": "earnings_yield",
-        "expense_ratio": "expense_ratio",
-        "holdings_count": "holdings_count",
-    }
-    rows = []
-    for key, (label, configured_weight) in labels.items():
-        raw = metrics.get(key, np.nan)
-        points = scored["metric_scores"].get(score_key_map[key], np.nan)
-        rows.append({
-            "Input": label,
-            "Observed value": format_metric(key, raw),
-            "Normalized points": fmt_num(points, 1),
-            "Configured weight": fmt_pct(configured_weight),
-            "_score": points,
-            "_weight": configured_weight,
-        })
-    valid_weight = sum(row["_weight"] for row in rows if np.isfinite(row["_score"]))
-    for row in rows:
-        effective_weight = row["_weight"] / valid_weight if valid_weight and np.isfinite(row["_score"]) else 0.0
-        row["Effective weight"] = fmt_pct(effective_weight)
-        row["Points contributed"] = fmt_num(row["_score"] * effective_weight, 1) if np.isfinite(row["_score"]) else "N/A"
-    title = score_label(scored, "valuation")
-    if profile in {"equity_etf", "fixed_income_etf"}:
-        title = f"{title} inputs (portfolio P/E and P/B are context only)"
-    frame = pd.DataFrame(rows).drop(columns=["_score", "_weight"])
-    return title, frame, float(scored["valuation_score"])
-
-
-def show_security(metrics: dict, scored: dict, holdings: pd.DataFrame | None = None):
-    engine = scored.get("scoring_engine", scored.get("analysis_profile", "Unknown"))
+def show_security(metrics: dict, scored: dict):
     st.markdown(f"**{metrics.get('company', metrics.get('ticker'))}** · `{metrics.get('ticker', 'N/A')}`")
-    st.caption(f"Detected scoring engine: {engine}")
-    main_score = scored["main_score"]
-    main_score_text = f"{main_score:+.1f}" if np.isfinite(main_score) else "N/A"
+    st.caption(f"Detected scoring engine: **{scored['scoring_engine']}**. Scores from different asset engines are not directly comparable.")
     st.markdown(
-        f"<div style='font-size:3rem;font-weight:700'>Main Quantitative Score: "
-        f"{main_score_text} (range -100 to +100)</div>",
+        f"<div style='font-size:3.1rem;font-weight:750;line-height:1.2'>"
+        f"Main Quantitative Score&nbsp; {fmt_score(scored['main_score'])}"
+        f"<span style='font-size:1rem;font-weight:400'> / 100</span></div>",
         unsafe_allow_html=True,
     )
-    st.caption("Main score is always -100 to +100. Scores from different engines are not directly comparable.")
+    st.caption("Score range: -100 to +100. Scores produced by different asset engines are not directly comparable.")
     st.markdown(
-        f"**Sector:** {metrics.get('sector', 'N/A')}　|　"
-        f"**Industry / fund category:** {metrics.get('category', metrics.get('industry', 'N/A'))}　|　"
-        f"**Asset type:** {metrics.get('asset_class', 'N/A')}"
+        f"**Sector:** {metrics.get('sector', 'N/A')} &nbsp;|&nbsp; "
+        f"**Category:** {metrics.get('category', 'N/A')} &nbsp;|&nbsp; "
+        f"**Asset type:** {metrics.get('asset_class', 'N/A')} &nbsp;|&nbsp; "
+        f"**Data date:** {metrics.get('data_date', 'N/A')}"
     )
-    labels = [score_label(scored, key) for key in ("growth", "quality", "valuation")]
-    c = st.columns(5)
-    c[0].metric(labels[0], fmt_score(scored["growth_score"]))
-    c[1].metric(labels[1], fmt_score(scored["quality_score"]))
-    c[2].metric(labels[2], fmt_score(scored["valuation_score"]))
-    c[3].metric("Risk & Resilience", fmt_score(scored["risk_score"]))
-    c[4].metric("Data Confidence", fmt_pct(scored["data_confidence"] / 100))
-    val_title, val_frame, val_score = valuation_breakdown(metrics, scored)
-    with st.expander(f"{val_title} — branch score {fmt_num(val_score, 1)}", expanded=True):
-        st.dataframe(val_frame, hide_index=True, use_container_width=True)
-    growth_keys = [
-        ("Revenue 1Y", "revenue_growth_1y"), ("Revenue 3Y", "revenue_growth_3y"), ("Revenue 5Y", "revenue_growth_5y"),
-        ("EPS 1Y", "eps_growth_1y"), ("EPS 3Y", "eps_growth_3y"), ("EPS 5Y", "eps_growth_5y"),
-        ("FCF 1Y", "fcf_growth_1y"), ("FCF 3Y", "fcf_growth_3y"), ("FCF 5Y", "fcf_growth_5y"),
-    ]
-    if metrics.get("asset_class") == "stock":
-        growth = pd.DataFrame({
-            "Metric": [label for label, _ in growth_keys],
-            "Raw growth": [fmt_pct(metrics.get(key)) for _, key in growth_keys],
-            "Normalized score": [fmt_num(scored["metric_scores"].get(key)) for _, key in growth_keys],
-        })
-        st.dataframe(growth, hide_index=True, use_container_width=True)
-    if holdings is not None:
-        if holdings.empty:
-            st.warning("Yahoo Finance did not provide a holdings list for this ETF.")
+    labels = scored["category_labels"]
+    columns = st.columns(5)
+    columns[0].metric(labels["growth"], fmt_score(scored["growth_score"]))
+    columns[1].metric(labels["quality"], fmt_score(scored["quality_score"]))
+    columns[2].metric(labels["valuation"], fmt_score(scored["valuation_score"]))
+    columns[3].metric("Risk & Resilience", fmt_score(scored["risk_score"]))
+    columns[4].metric("Data Confidence", fmt_pct(scored["data_confidence"] / 100))
+
+    details = []
+    for row in scored.get("breakdown", []):
+        raw = row["raw_value"]
+        name = row["metric"].lower()
+        if any(term in name for term in (
+            "growth", "yield", "return", "drawdown", "volatility", "expense",
+            "spread", "concentration", "sector weight", "margin", "earnings_consistency",
+        )):
+            raw_display = fmt_pct(raw)
+        elif "net debt / fcf" in name:
+            raw_display = fmt_num(raw)
+        elif "dollar volume" in name or "free cash flow" in name:
+            raw_display = fmt_money(raw)
         else:
-            st.dataframe(holdings.style.format({"weight": "{:.2%}"}), hide_index=True, use_container_width=True)
-            st.download_button(
-                "Download ETF holdings CSV",
-                holdings.to_csv(index=False).encode("utf-8"),
-                file_name=f"{metrics['ticker']}_holdings.csv",
-                mime="text/csv",
-                key=f"holdings_download_{metrics['ticker']}",
-            )
-    with st.expander("All raw metrics"):
-        st.dataframe(pd.DataFrame({"Metric": list(metrics), "Value": [format_metric(k, v) for k, v in metrics.items()]}), hide_index=True, use_container_width=True)
+            raw_display = fmt_num(raw)
+        details.append({
+            "Score group": row["group"],
+            "Metric": row["metric"],
+            "Observed value": raw_display,
+            "Normalized points": fmt_score(row["score"]),
+            "Configured weight (local branch)": fmt_pct(row["intended_weight"]),
+            "Weighted points (local branch)": fmt_score(row["score"] * row["intended_weight"] if np.isfinite(row["score"]) else np.nan),
+            "Scoring thresholds / anchors": row.get("thresholds", "N/A"),
+            "Source / rule": row["source"],
+        })
+    if details:
+        with st.expander("Metric-level inputs, thresholds and local weighted points", expanded=True):
+            st.dataframe(pd.DataFrame(details), hide_index=True, use_container_width=True)
+
+    if metrics.get("asset_class") == "stock":
+        growth_rows = []
+        for label, key in [
+            ("Revenue 1Y", "revenue_growth_1y"), ("Revenue 3Y", "revenue_growth_3y"), ("Revenue 5Y", "revenue_growth_5y"),
+            ("EPS 1Y", "eps_growth_1y"), ("EPS 3Y", "eps_growth_3y"), ("EPS 5Y", "eps_growth_5y"),
+            ("FCF 1Y", "fcf_growth_1y"), ("FCF 3Y", "fcf_growth_3y"), ("FCF 5Y", "fcf_growth_5y"),
+        ]:
+            growth_rows.append({"Metric": label, "Observed": fmt_pct(metrics.get(key))})
+        st.markdown("**Most important raw growth metrics**")
+        st.dataframe(pd.DataFrame(growth_rows), hide_index=True, use_container_width=True)
+    elif metrics.get("asset_class") == "fixed_income":
+        fund_rows = [
+            ("30-Day SEC Yield", fmt_pct(metrics.get("sec_yield_30d"))),
+            ("Yield to Maturity", fmt_pct(metrics.get("yield_to_maturity"))),
+            ("Effective Duration (years)", fmt_num(metrics.get("effective_duration"))),
+            ("Weighted Average Maturity (years)", fmt_num(metrics.get("weighted_average_maturity"))),
+            ("Expense Ratio", fmt_pct(metrics.get("expense_ratio"))),
+            ("30-Day Average Dollar Volume", fmt_money(metrics.get("average_dollar_volume_30d"))),
+            ("Treasury / Credit Exposure", str(metrics.get("treasury_credit_exposure", "N/A"))),
+        ]
+        st.dataframe(pd.DataFrame(fund_rows, columns=["Fixed-income metric", "Reported value"]), hide_index=True, use_container_width=True)
+    elif metrics.get("asset_class") == "equity_etf":
+        etf_rows = [
+            ("Number of holdings", fmt_num(metrics.get("holdings_count"), 0)),
+            ("Top-10 concentration", fmt_pct(metrics.get("top10_concentration"))),
+            ("Largest sector weight", fmt_pct(metrics.get("largest_sector_weight"))),
+            ("Expense ratio", fmt_pct(metrics.get("expense_ratio"))),
+            ("30-Day Average Dollar Volume", fmt_money(metrics.get("average_dollar_volume_30d"))),
+        ]
+        st.dataframe(pd.DataFrame(etf_rows, columns=["Equity ETF metric", "Reported value"]), hide_index=True, use_container_width=True)
+    if metrics.get("asset_class") == "fixed_income":
+        st.caption(
+            "SEC Yield and Yield to Maturity are distinct. Comparable-duration Treasury YTM, duration, or maturity not explicitly reported by the source remains N/A."
+        )
 
 
-st.title("Laura Gao Quantitative Investment System")
-st.caption("Six-tab research and decision-support tool for security selection, portfolio construction, stress testing, and Laura-specific planning.")
-st.info("Wharton evaluates strategy, client alignment, research, analysis, and communication. Use the official WInS universe and registered-team instructions for submissions.")
+def candidate_display(frame: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for _, row in frame.iterrows():
+        rows.append({
+            "Ticker": row.get("ticker"),
+            "Company": row.get("company"),
+            "Main Quantitative Score": fmt_score(row.get("main_score")),
+            "Engine": row.get("scoring_engine"),
+            "Asset type": row.get("asset_class"),
+            "Sector / category": row.get("sector") if row.get("sector") not in (None, "", "Unknown") else row.get("category"),
+            "Return 1Y": fmt_pct(row.get("total_return_1y")),
+            "Return 3Y": fmt_pct(row.get("total_return_3y")),
+            "Return 5Y": fmt_pct(row.get("total_return_5y")),
+            "Expense ratio": fmt_pct(row.get("expense_ratio")),
+            "Trailing P/E": fmt_num(row.get("trailing_pe")),
+            "FCF Yield": fmt_pct(row.get("fcf_yield")),
+            "ROE": fmt_pct(row.get("return_on_equity")),
+            "Duration (years)": fmt_num(row.get("effective_duration")),
+            "YTM": fmt_pct(row.get("yield_to_maturity")),
+            "30-Day Dollar Volume": fmt_money(row.get("average_dollar_volume_30d")),
+            "Risk": fmt_score(row.get("risk_score")),
+            "Data confidence": fmt_pct(row.get("data_confidence", np.nan) / 100),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_candidate_batch(tickers: tuple[str, ...], cache_dir: str, ttl_hours: float):
+    app_cfg = {"data": {"cache_dir": cache_dir, "cache_ttl_hours": ttl_hours}}
+    return batch_analyze(tickers, app_cfg)
+
 
 tabs = st.tabs([
-    "1 Security Analysis & Selection",
-    "2 Portfolio Optimizer",
+    "1 Portfolio Construction & Optimization",
+    "2 Asset Score",
     "3 Stress Test",
     "4 Settings",
-    "5 Operating Reserve Assets",
-    "6 Reserve Optimizer",
 ])
 
-# ------------------------- TAB 1 -------------------------
 with tabs[0]:
-    st.subheader("Security Analysis & Selection")
-    mode = st.radio("Section", ["A. Analyze One Security", "B. Sector Rankings", "C. Candidate Portfolio Builder"], horizontal=True, key="security_mode")
-    if mode == "A. Analyze One Security":
-        ticker = st.text_input("Ticker", "AAPL", key="security_ticker")
-        if st.button("Analyze security", key="security_analyze"):
-            try:
-                normalized = normalize_ticker(ticker)
-                with st.spinner(f"Downloading {normalized} data..."):
-                    metrics, _ = analyze_security(normalized, cfg)
-                    scored = score_row(metrics)
-                    holdings = etf_holdings(normalized, cfg) if metrics["asset_class"] in {"equity_etf", "fixed_income"} else None
-                    st.session_state.single_result = (metrics, scored, holdings)
-            except Exception as exc:
-                st.error(f"Could not analyze {ticker}: {exc}")
-        if st.session_state.single_result:
-            show_security(*st.session_state.single_result)
-    elif mode == "B. Sector Rankings":
-        st.success("The bundled ranking universe is local-only; opening this section makes no internet request.")
-        source = st.radio("Universe source", ["Bundled US large-cap universe", "Upload custom/WInS CSV"], horizontal=True, key="rank_source")
-        universe = None
-        if source == "Bundled US large-cap universe":
-            try:
-                universe = load_local_universe()
-            except Exception as exc:
-                st.error(f"Could not load local universe: {exc}")
+    st.subheader("Portfolio Construction & Optimization")
+    st.caption("Add mixed stocks and ETFs, load their shared cached analysis, then set optional long-only weights. ETF and company scores use distinct, non-comparable engines.")
+    initial_text = ", ".join(st.session_state.candidate_tickers)
+    ticker_text = st.text_area("Candidate tickers", value=initial_text, height=72, key="candidate_text")
+    left, right = st.columns([1, 3])
+    if left.button("Load / refresh candidates", key="candidate_load"):
+        tickers = list(dict.fromkeys(
+            normalize_ticker(part.strip())
+            for part in ticker_text.replace("\n", ",").split(",")
+            if part.strip()
+        ))
+        prior_tickers = st.session_state.candidate_tickers
+        st.session_state.candidate_tickers = tickers
+        if not tickers:
+            st.error("Enter at least one ticker.")
+            st.session_state.candidate_raw = pd.DataFrame()
+            st.session_state.candidate_prices = pd.DataFrame()
+            st.session_state.candidate_scored = pd.DataFrame()
+            st.session_state.optimizer_result = None
+            st.session_state.pop("manual_weight_table", None)
+            st.session_state.pop("manual_weight_editor", None)
         else:
-            upload = st.file_uploader("CSV with ticker and optional sector", type=["csv"], key="rank_upload")
-            if upload is not None:
-                universe = pd.read_csv(upload)
-                universe.columns = [str(c).strip().lower() for c in universe.columns]
-                if "ticker" not in universe:
-                    st.error("CSV must contain a ticker column.")
-                    universe = None
-                elif "sector" not in universe:
-                    universe["sector"] = "Uploaded universe"
-        if universe is not None and not universe.empty:
-            sectors = sorted(universe["sector"].fillna("Unknown").astype(str).unique())
-            sector = st.selectbox("Sector", sectors, key="rank_sector")
-            sector_df = universe[universe["sector"].fillna("Unknown").astype(str) == sector]
-            count = st.slider("Number of names", 2, max(2, len(sector_df)), min(10, len(sector_df)), key="rank_count")
-            if st.button("Run sector ranking", key="rank_run"):
-                rows, errors = [], {}
-                for ticker in sector_df["ticker"].astype(str).head(count):
-                    raw, _, err = batch_analyze([ticker], cfg)
-                    errors.update(err)
-                    if not raw.empty:
-                        row = score_row(raw.iloc[0].to_dict())
-                        if row["asset_class"] == "stock":
-                            row["sector"] = sector
-                            rows.append(row)
-                ranked = pd.DataFrame(rows).sort_values("main_score", ascending=False).reset_index(drop=True)
-                if not ranked.empty:
-                    ranked["sector_rank"] = np.arange(1, len(ranked) + 1)
-                    ranked["sector_percentile"] = 100 if len(ranked) == 1 else 100 * (len(ranked) - ranked["sector_rank"]) / (len(ranked) - 1)
-                st.session_state.sector_ranked, st.session_state.sector_errors = ranked, errors
-            ranked = st.session_state.sector_ranked
-            if not ranked.empty:
-                columns = ["sector_rank", "ticker", "company", "main_score", "growth_score", "quality_score", "valuation_score", "risk_score", "data_confidence", "sector_percentile"]
-                show = ranked[[c for c in columns if c in ranked]].rename(columns={"data_confidence": "Data Confidence", "sector_percentile": "Sector Percentile"})
-                st.dataframe(format_frame(show), hide_index=True, use_container_width=True)
-            if st.session_state.sector_errors:
-                st.json(st.session_state.sector_errors)
-    else:
-        if "candidate_text_pending" in st.session_state:
-            st.session_state.candidate_text = st.session_state.pop("candidate_text_pending")
-        if "candidate_text" not in st.session_state:
-            st.session_state.candidate_text = ", ".join(st.session_state.candidates)
-        text = st.text_area("Mixed candidate tickers", key="candidate_text", height=110)
-        if st.button("Save candidate list", key="candidate_save"):
-            st.session_state.candidates = list(dict.fromkeys(normalize_ticker(x) for x in text.replace("\n", ",").split(",") if x.strip()))
-            st.session_state.candidate_text_pending = ", ".join(st.session_state.candidates)
-            st.success(f"Saved {len(st.session_state.candidates)} candidates.")
-            st.rerun()
-        if st.button("Analyze and load candidates", key="candidate_load"):
-            with st.spinner("Downloading candidate data once..."):
-                raw, prices, errors = cached_batch(tuple(st.session_state.candidates), cfg["data"]["cache_dir"], float(cfg["data"]["cache_ttl_hours"]))
-                st.session_state.candidate_raw = pd.DataFrame([score_row(row.to_dict()) for _, row in raw.iterrows()])
-                st.session_state.candidate_prices = price_frame(prices)
-                st.session_state.candidate_errors = errors
+            if tickers != prior_tickers:
+                st.session_state.pop("manual_weight_table", None)
+                st.session_state.pop("manual_weight_editor", None)
                 st.session_state.optimizer_result = None
-        if not st.session_state.candidate_raw.empty:
-            columns = ["ticker", "company", "main_score", "scoring_engine", "asset_class", "sector", "category", "risk_score", "data_confidence"]
-            show = st.session_state.candidate_raw[[c for c in columns if c in st.session_state.candidate_raw]].rename(columns={"data_confidence": "Data Confidence"})
-            st.dataframe(format_frame(show), hide_index=True, use_container_width=True)
-            st.write(f"Usable price series: {st.session_state.candidate_prices.shape[1]}")
-        if st.session_state.candidate_errors:
+            with st.spinner("Loading available market data; each failed ticker is isolated..."):
+                raw, prices, errors = cached_candidate_batch(
+                    tuple(tickers), cfg["data"]["cache_dir"], float(cfg["data"]["cache_ttl_hours"])
+                )
+            st.session_state.candidate_raw = raw
+            st.session_state.candidate_prices = price_frame(prices)
+            st.session_state.candidate_errors = errors
+            st.session_state.candidate_scored = pd.DataFrame(
+                [score_row(row.to_dict()) for _, row in raw.iterrows()]
+            ) if not raw.empty else pd.DataFrame()
+            st.session_state.optimizer_result = None
+    right.caption("Yahoo Finance data is cached locally for the configured cache period. Clicking load again refreshes Streamlit's candidate view.")
+
+    if not st.session_state.candidate_scored.empty:
+        st.markdown("### Candidate scores and major metrics")
+        st.dataframe(candidate_display(st.session_state.candidate_scored), hide_index=True, use_container_width=True)
+        st.markdown("### User-defined portfolio weights")
+        editable = st.session_state.candidate_scored[["ticker", "asset_class", "sector", "main_score"]].copy()
+        if "manual_weight_table" not in st.session_state:
+            editable["weight"] = 100 / max(1, len(editable))
+        else:
+            saved = st.session_state.manual_weight_table.set_index("ticker")["weight"]
+            editable["weight"] = editable["ticker"].map(saved).fillna(0.0)
+        previous_manual = st.session_state.get("manual_weight_table")
+        edited = st.data_editor(
+            editable,
+            hide_index=True,
+            use_container_width=True,
+            key="manual_weight_editor",
+            disabled=["ticker", "asset_class", "sector", "main_score"],
+            column_config={"weight": st.column_config.NumberColumn("Weight (%)", min_value=0.0, max_value=100.0, format="%.1f")},
+        )
+        current_manual = edited[["ticker", "weight"]].copy()
+        if previous_manual is not None and not current_manual.equals(previous_manual.reset_index(drop=True)):
+            st.session_state.optimizer_result = None
+        st.session_state.manual_weight_table = current_manual
+        weight_total_percent = float(pd.to_numeric(edited["weight"], errors="coerce").fillna(0).sum())
+        weight_total = weight_total_percent / 100
+        st.caption(f"Current manual weights sum to {fmt_pct(weight_total)}; weights must sum to 100% to include this portfolio.")
+        metadata = st.session_state.candidate_scored[
+            ["ticker", "asset_class", "sector", "average_dollar_volume_30d"]
+        ].copy()
+        manual = pd.Series(
+            pd.to_numeric(edited["weight"], errors="coerce").fillna(0).to_numpy() / 100,
+            index=edited["ticker"],
+        )
+        if st.button("Run feasible portfolio optimizer", key="optimizer_run"):
+            st.session_state.optimizer_result = None
+            try:
+                benchmark = str(cfg["optimizer"]["benchmark"]).strip().upper()
+                benchmark_prices = pd.DataFrame()
+                if benchmark:
+                    benchmark_start = (pd.Timestamp.today().normalize() - pd.DateOffset(years=int(cfg["optimizer"]["lookback_years"]))).strftime("%Y-%m-%d")
+                    try:
+                        benchmark_prices = download_price_period([benchmark], benchmark_start, date.today().isoformat())
+                    except Exception as exc:
+                        st.warning(f"Benchmark {benchmark} could not be loaded; candidate optimization will continue without it: {exc}")
+                else:
+                    st.warning("No benchmark ticker is configured; candidate optimization will continue without a benchmark comparison.")
+                st.session_state.benchmark_prices = benchmark_prices
+                optimizer_metadata = metadata.copy()
+                result = monte_carlo_optimize(
+                    st.session_state.candidate_prices,
+                    cfg,
+                    metadata=optimizer_metadata,
+                    manual_weights=manual if np.isclose(weight_total, 1.0, atol=1e-6) else None,
+                )
+                st.session_state.optimizer_result = result
+            except Exception as exc:
+                st.error(f"Portfolio optimization could not run: {exc}")
+
+    if st.session_state.candidate_errors:
+        with st.expander("Ticker data issues"):
             st.json(st.session_state.candidate_errors)
 
-# ------------------------- TAB 2 -------------------------
-with tabs[1]:
-    st.subheader("Portfolio Optimizer")
-    if st.session_state.candidate_prices.empty:
-        st.warning("Use Security Analysis & Selection → Candidate Portfolio Builder first.")
-    else:
-        cap = float(cfg["optimizer"]["max_weight"])
-        st.write(f"Long-only feasible portfolios; current maximum holding weight: **{cap:.0%}**.")
-        if st.button("Run Monte Carlo optimizer", key="optimizer_run"):
-            try:
-                st.session_state.optimizer_result = monte_carlo_optimize(st.session_state.candidate_prices.dropna(how="all", axis=1), cfg)
-            except Exception as exc:
-                st.error(str(exc))
-        result = st.session_state.optimizer_result
-        if result:
-            names = list(result["portfolios"])
-            selected = st.selectbox("Portfolio", names, index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0, key="optimizer_select")
-            st.session_state.selected_portfolio = selected
-            summary = pd.DataFrame([{"Portfolio": n, "Expected return": p["expected_return"], "Volatility": p["volatility"], "Sharpe": p["sharpe"]} for n, p in result["portfolios"].items()])
-            st.dataframe(summary.style.format({"Expected return": "{:.2%}", "Volatility": "{:.2%}", "Sharpe": "{:.2f}"}), hide_index=True, use_container_width=True)
-            p = result["portfolios"][selected]
-            st.dataframe(pd.DataFrame({"Ticker": p["weights"].index, "Weight": p["weights"].values}).style.format({"Weight": "{:.2%}"}), hide_index=True, use_container_width=True)
-            if selected == "Laura Goal Portfolio":
-                st.caption(f"Laura Goal Portfolio construction: {p['construction']}; a model assumption, not an official competition rule.")
-            st.dataframe(result["correlation"].round(2), use_container_width=True)
-            distribution = simulate_2033_distribution(p["expected_return"], p["volatility"], cfg["laura"]["contribution_2027"], cfg["laura"]["contribution_2028"], int(cfg["laura"]["reserve_simulations"]), int(cfg["laura"]["reserve_simulation_seed"]))
-            st.markdown("### Illustrative Expected 2033 Value")
-            st.metric("Expected-value estimate", fmt_money(laura_value_2033(p["expected_return"], cfg["laura"]["contribution_2027"], cfg["laura"]["contribution_2028"])))
-            st.caption("Uses only Laura's fixed 2027 and 2028 contributions. WInS gains/losses and reserve targets do not alter this projection.")
-            st.dataframe(pd.DataFrame({"Percentile": ["5th", "25th", "50th", "75th", "95th"], "2033 value": [fmt_money(distribution.quantile(q)) for q in (.05, .25, .50, .75, .95)]}), hide_index=True, use_container_width=True)
+    result = st.session_state.optimizer_result
+    if result:
+        if result.get("manual_weights_error"):
+            st.warning(f"User-defined portfolio was not created: {result['manual_weights_error']}")
+        excluded_liquidity = result["constraints"].get("excluded_for_liquidity", [])
+        if excluded_liquidity:
+            st.warning(
+                "Not included in optimization because 30-day average dollar volume was below "
+                f"${result['constraints']['minimum_liquidity']:,.0f} or unavailable: {', '.join(excluded_liquidity)}."
+            )
+        excluded_history = result["constraints"].get("excluded_for_history", [])
+        if excluded_history:
+            st.warning(f"Not included because usable overlapping price history was unavailable: {', '.join(excluded_history)}.")
+        st.markdown("### Feasible portfolios")
+        st.caption(
+            f"Long-only, max holding {cfg['optimizer']['max_weight']:.0%}; "
+            f"equity allocation {cfg['optimizer']['minimum_equity_weight']:.0%}–{cfg['optimizer']['maximum_equity_weight']:.0%}; "
+            f"fixed income {cfg['optimizer']['minimum_fixed_income_weight']:.0%}–{cfg['optimizer']['maximum_fixed_income_weight']:.0%}. "
+            "Sector caps use each sector's share of the loaded candidate universe plus the configured tolerance."
+        )
+        caps = result["constraints"]["sector_caps"]
+        if caps:
+            with st.expander("Applied sector allocation caps"):
+                cap_frame = pd.DataFrame([
+                    {"Sector / category": name, "Maximum portfolio weight": fmt_pct(weight)}
+                    for name, weight in caps.items()
+                ])
+                st.dataframe(cap_frame, hide_index=True, use_container_width=True)
+        portfolio_summary = pd.DataFrame([
+            {
+                "Portfolio": name,
+                "Expected annual return": fmt_pct(portfolio["expected_return"]),
+                "Annualized volatility": fmt_pct(portfolio["volatility"]),
+                "Sharpe ratio": fmt_num(portfolio["sharpe"]),
+                "Estimated 2033 funding success": fmt_pct(portfolio.get("funding_success_probability_estimate", np.nan)),
+            }
+            for name, portfolio in result["portfolios"].items()
+        ])
+        st.dataframe(portfolio_summary, hide_index=True, use_container_width=True)
+        names = list(result["portfolios"])
+        selected = st.selectbox(
+            "Portfolio detail", names,
+            index=names.index(st.session_state.selected_portfolio) if st.session_state.selected_portfolio in names else 0,
+            key="portfolio_detail_select",
+        )
+        st.session_state.selected_portfolio = selected
+        portfolio = result["portfolios"][selected]
+        weight_frame = pd.DataFrame({"Ticker": portfolio["weights"].index, "Weight": portfolio["weights"].values})
+        st.dataframe(weight_frame.style.format({"Weight": "{:.2%}"}), hide_index=True, use_container_width=True)
+        if selected == "Laura Goal Portfolio":
+            if portfolio["funding_objective_met"]:
+                st.success(f"Sampled portfolio selection met the approximate 99.5% reserve-funding objective ({fmt_pct(portfolio['funding_success_probability_estimate'])}).")
+            else:
+                st.warning(f"No sampled feasible portfolio met the approximate 99.5% objective; the displayed portfolio has the highest estimated funding success ({fmt_pct(portfolio['funding_success_probability_estimate'])}).")
+            st.caption(portfolio["construction"] + " Funding probability is an assumption-driven model estimate, not a guarantee.")
+        if selected == "Target Return Portfolio" and not portfolio["target_met"]:
+            st.warning(f"No sampled feasible portfolio reached the configured target return of {fmt_pct(portfolio['target_return'])}; showing the highest-return feasible sample.")
 
-# ------------------------- TAB 3 -------------------------
+        frontier = result.get("efficient_frontier", pd.DataFrame())
+        simulations = result.get("simulations", pd.DataFrame())
+        if not simulations.empty:
+            st.markdown(f"### Approximate efficient frontier — {len(simulations):,} feasible samples")
+            chart_data = simulations.rename(columns={"volatility": "Annualized volatility", "expected_return": "Expected annual return"})
+            fig = px.scatter(
+                chart_data, x="Annualized volatility", y="Expected annual return",
+                opacity=.35, title="Feasible random portfolios (sample, not exact optima)",
+            )
+            if not frontier.empty:
+                fig.add_scatter(
+                    x=frontier["volatility"], y=frontier["expected_return"],
+                    mode="lines", name="Sampled frontier",
+                )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Laura 2033 contribution and funding check")
+        payment = float(cfg["laura"]["annual_payment"])
+        payment_count = int(cfg["laura"]["payment_count"])
+        liability = payment * payment_count
+        st.info(f"Official long-term cash flows are unchanged: $300,000 at the beginning of 2027, $150,000 at the beginning of 2028, no withdrawals before 2033, then {payment_count} beginning-of-year ${payment:,.0f} payments from 2033–2042. WInS gains/losses are excluded.")
+        distribution = simulate_2033_distribution(
+            portfolio["expected_return"], portfolio["volatility"],
+            cfg["laura"]["contribution_2027"], cfg["laura"]["contribution_2028"],
+            max(100000, int(cfg["laura"]["projection_simulations"])),
+            int(cfg["laura"]["reserve_simulation_seed"]),
+        )
+        expected = laura_value_2033(
+            portfolio["expected_return"],
+            cfg["laura"]["contribution_2027"],
+            cfg["laura"]["contribution_2028"],
+        )
+        st.metric("Illustrative Expected 2033 Value", fmt_money(expected))
+        st.caption("Illustrative expected-value estimate under the selected portfolio's historical return/volatility inputs; it is not guaranteed.")
+        pct_table = pd.DataFrame({
+            "Percentile": ["5th", "25th", "50th", "75th", "95th"],
+            "2033 value": [fmt_money(distribution.quantile(q)) for q in (.05, .25, .50, .75, .95)],
+        })
+        st.dataframe(pct_table, hide_index=True, use_container_width=True)
+        funding_probability = float((distribution >= liability).mean())
+        st.metric(f"Estimated probability of reaching the {fmt_money(liability)} nominal-liability benchmark by 2033", fmt_pct(funding_probability))
+        st.caption("This small check compares the simulated 2033 asset value with the $500,000 zero-yield benchmark. It does not replace reserve analysis or imply a guaranteed yield.")
+
+        benchmark_prices = st.session_state.get("benchmark_prices", pd.DataFrame())
+        benchmark = str(cfg["optimizer"]["benchmark"]).upper()
+        if not benchmark_prices.empty and benchmark in benchmark_prices.columns:
+            b_returns = prepare_returns(benchmark_prices[[benchmark]], int(cfg["optimizer"]["lookback_years"]))
+            if not b_returns.empty:
+                benchmark_return = annualized_expected_returns(b_returns).iloc[0]
+                benchmark_volatility = b_returns[benchmark].std(ddof=1) * np.sqrt(252)
+                st.markdown("### Selected benchmark")
+                st.dataframe(pd.DataFrame([
+                    {"Series": selected, "Expected annual return": fmt_pct(portfolio["expected_return"]), "Annualized volatility": fmt_pct(portfolio["volatility"]), "Sharpe ratio": fmt_num(portfolio["sharpe"])},
+                    {"Series": benchmark, "Expected annual return": fmt_pct(benchmark_return), "Annualized volatility": fmt_pct(benchmark_volatility), "Sharpe ratio": fmt_num((benchmark_return - cfg["optimizer"]["risk_free_rate"]) / benchmark_volatility if benchmark_volatility > 0 else np.nan)},
+                ]), hide_index=True, use_container_width=True)
+        st.markdown("### Candidate correlation")
+        st.dataframe(result["correlation"].round(2), use_container_width=True)
+
+with tabs[1]:
+    st.subheader("Asset Score")
+    st.caption("Analyze one security with its automatically detected engine. Ticker aliases are normalized (for example BRK.B → BRK-B).")
+    ticker = st.text_input("Ticker", "AAPL", key="asset_score_ticker")
+    if st.button("Analyze security", key="asset_score_run"):
+        try:
+            normalized = normalize_ticker(ticker)
+            with st.spinner(f"Analyzing {normalized}..."):
+                metrics, _ = analyze_security(normalized, cfg)
+            st.session_state.single_result = (metrics, score_security(metrics, cfg))
+        except Exception as exc:
+            st.session_state.single_result = None
+            st.error(f"Could not analyze {ticker}: {exc}")
+    if st.session_state.single_result:
+        show_security(*st.session_state.single_result)
+
 with tabs[2]:
     st.subheader("Stress Test")
     result = st.session_state.optimizer_result
     if not result:
-        st.warning("Run the Portfolio Optimizer first.")
+        st.warning("Load candidates and run the portfolio optimizer first.")
     else:
         names = list(result["portfolios"])
         selected = st.selectbox("Portfolio", names, key="stress_portfolio")
@@ -444,150 +497,95 @@ with tabs[2]:
                 prices = download_price_period(list(weights.index), start, end)
                 st.session_state.hist_stress = historical_portfolio_stress(prices, weights)
             except Exception as exc:
-                st.error(str(exc))
-        hist = st.session_state.get("hist_stress")
+                st.session_state.hist_stress = {"available": False, "reason": str(exc)}
+        hist = st.session_state.hist_stress
         if hist and hist.get("available"):
-            h1, h2, h3 = st.columns(3)
-            h1.metric("Portfolio return", fmt_pct(hist["portfolio_return"]))
-            h2.metric("Max drawdown", fmt_pct(hist["max_drawdown"]))
-            h3.metric("Weight coverage", fmt_pct(hist["weight_coverage"]))
-            contributions = pd.DataFrame({
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Buy-and-hold portfolio return", fmt_pct(hist["portfolio_return"]))
+            c2.metric("Maximum drawdown", fmt_pct(hist["max_drawdown"]))
+            c3.metric("Weight coverage", fmt_pct(hist["weight_coverage"]))
+            detail = pd.DataFrame({
                 "Ticker": hist["contributions"].index,
                 "Holding return": hist["holding_returns"].reindex(hist["contributions"].index).values,
-                "Contribution": hist["contributions"].values,
+                "Portfolio contribution": hist["contributions"].values,
             })
-            st.dataframe(contributions.style.format({"Holding return": "{:.2%}", "Contribution": "{:.2%}"}), hide_index=True, use_container_width=True)
+            st.dataframe(detail.style.format({"Holding return": "{:.2%}", "Portfolio contribution": "{:.2%}"}), hide_index=True, use_container_width=True)
             if hist["weight_coverage"] < .999:
-                st.caption("Unavailable historical holdings were excluded and available weights were renormalized.")
+                st.caption("Missing history is excluded and available initial weights are renormalized; coverage is reported.")
         elif hist:
-            st.warning(hist.get("reason", "Historical test unavailable."))
+            st.warning(hist.get("reason", "Historical stress unavailable."))
         c1, c2, c3 = st.columns(3)
-        equity = pct_input("Equity shock", cfg["stress"]["custom_equity_shock"], -90, 50, 5, "stress_equity")
-        tech = pct_input("Technology shock", cfg["stress"]["custom_tech_shock"], -90, 50, 5, "stress_tech")
+        equity = pct_input("Equity shock", cfg["stress"]["custom_equity_shock"], -90, 50, 1, "stress_equity")
+        technology = pct_input("Technology shock", cfg["stress"]["custom_tech_shock"], -90, 50, 1, "stress_tech")
         fixed = pct_input("Fixed-income shock", cfg["stress"]["custom_fixed_income_shock"], -50, 50, 1, "stress_fixed")
-        metadata = st.session_state.candidate_raw[["ticker", "sector", "asset_class"]] if not st.session_state.candidate_raw.empty else pd.DataFrame()
-        shocked = hypothetical_stress(weights, metadata, equity, tech, fixed)
-        st.metric("Immediate portfolio shock", fmt_pct(shocked["loss_contribution"].sum()))
+        metadata = st.session_state.candidate_scored[["ticker", "sector", "asset_class"]] if not st.session_state.candidate_scored.empty else pd.DataFrame()
+        shocked = hypothetical_stress(weights, metadata, equity, technology, fixed)
+        st.metric("Immediate modeled portfolio shock", fmt_pct(shocked["loss_contribution"].sum()))
         st.dataframe(shocked.style.format({"weight": "{:.2%}", "shock": "{:.1%}", "loss_contribution": "{:.2%}"}), hide_index=True, use_container_width=True)
 
-# ------------------------- TAB 4 -------------------------
 with tabs[3]:
     st.subheader("Settings")
-    st.caption("Percentage inputs accept values such as 20 for 20% and 4 for 4%; internal calculations remain decimals.")
+    st.caption("Score and portfolio percentage inputs display as percentages; internal calculations use decimal values. Historical simulations are reproducible from their configured seed.")
     c1, c2, c3 = st.columns(3)
-    growth = pct_input("Growth weight", cfg["scoring"]["category_weights"]["growth"], 0, 100, 5, "settings_growth")
-    quality = pct_input("Quality weight", cfg["scoring"]["category_weights"]["quality"], 0, 100, 5, "settings_quality")
-    valuation = pct_input("Valuation weight", cfg["scoring"]["category_weights"]["valuation"], 0, 100, 5, "settings_valuation")
-    max_weight = pct_input("Maximum holding weight", cfg["optimizer"]["max_weight"], 5, 100, 5, "settings_max_weight")
-    risk_free = pct_input("Risk-free rate", cfg["optimizer"]["risk_free_rate"], -5, 20, .5, "settings_rf")
-    reserve_yield = pct_input("Reserve yield assumption", cfg["laura"]["reserve_yield"], 0, 15, .5, "settings_reserve_yield")
-    simulations = st.number_input("Random portfolios", 500, 100000, int(cfg["optimizer"]["simulations"]), 500, key="settings_simulations")
-    lookback = st.number_input("Price lookback (years)", 1, 10, int(cfg["optimizer"]["lookback_years"]), 1, key="settings_lookback")
+    max_weight = pct_input("Maximum holding weight", cfg["optimizer"]["max_weight"], 5, 100, 1, "settings_max_weight")
+    minimum_equity = pct_input("Minimum equity allocation", cfg["optimizer"]["minimum_equity_weight"], 0, 100, 1, "settings_equity_min")
+    maximum_equity = pct_input("Maximum equity allocation", cfg["optimizer"]["maximum_equity_weight"], 0, 100, 1, "settings_equity_max")
+    minimum_fixed = pct_input("Minimum fixed-income allocation", cfg["optimizer"]["minimum_fixed_income_weight"], 0, 100, 1, "settings_fixed_min")
+    maximum_fixed = pct_input("Maximum fixed-income allocation", cfg["optimizer"]["maximum_fixed_income_weight"], 0, 100, 1, "settings_fixed_max")
+    sector_tolerance = pct_input("Sector tolerance", cfg["optimizer"]["sector_tolerance"], 0, 100, 1, "settings_sector_tolerance")
+    risk_free = pct_input("Risk-free rate (FCF yield scoring / Sharpe)", cfg["optimizer"]["risk_free_rate"], -5, 20, .1, "settings_risk_free")
+    target_return = pct_input("Required / target annual return", cfg["optimizer"]["target_return"], -50, 100, .5, "settings_target_return")
+    rf_text = st.text_input("Benchmark ticker", cfg["optimizer"]["benchmark"], key="settings_benchmark")
+    liquidity = st.number_input("Minimum 30-day average dollar volume ($)", min_value=0, value=int(cfg["optimizer"]["liquidity_requirement"]), step=100000, key="settings_liquidity")
+    duration_target = st.number_input("Fixed-income target duration (years)", min_value=0.0, max_value=30.0, value=float(cfg["scoring"]["fixed_income"]["target_duration"]), step=.25, key="settings_duration_target")
+    lookback = st.number_input("Historical lookback (years)", min_value=1, max_value=10, value=int(cfg["optimizer"]["lookback_years"]), key="settings_lookback")
+    simulations = st.number_input("Feasible random portfolios", min_value=500, max_value=100000, value=int(cfg["optimizer"]["simulations"]), step=500, key="settings_simulations")
+    expense_thresholds = cfg["scoring"]["equity_etf"]["expense_ratio_thresholds"]
+    c1, c2, c3 = st.columns(3)
+    expense_strong = pct_input("ETF expense ratio: strong anchor", expense_thresholds[0], 0, 5, .01, "settings_expense_strong")
+    expense_neutral = pct_input("ETF expense ratio: neutral anchor", expense_thresholds[1], 0, 10, .05, "settings_expense_neutral")
+    expense_weak = pct_input("ETF expense ratio: weak anchor", expense_thresholds[2], .01, 20, .1, "settings_expense_weak")
     if st.button("Apply settings", key="settings_apply"):
-        if growth + quality + valuation <= 0:
-            st.error("At least one category weight must be positive.")
+        if minimum_equity > maximum_equity or minimum_fixed > maximum_fixed:
+            st.error("Each allocation minimum must be less than or equal to its maximum.")
+        elif not rf_text.strip():
+            st.error("Enter a benchmark ticker, or use SPY.")
+        elif not expense_strong < expense_neutral < expense_weak:
+            st.error("Expense ratio anchors must be strictly increasing.")
         else:
-            cfg["scoring"]["category_weights"] = {"growth": growth, "quality": quality, "valuation": valuation}
-            cfg["optimizer"]["max_weight"] = max_weight
-            cfg["optimizer"]["risk_free_rate"] = risk_free
-            cfg["optimizer"]["simulations"] = int(simulations)
-            cfg["optimizer"]["lookback_years"] = int(lookback)
-            cfg["laura"]["reserve_yield"] = reserve_yield
+            cfg["optimizer"].update({
+                "max_weight": max_weight,
+                "minimum_equity_weight": minimum_equity,
+                "maximum_equity_weight": maximum_equity,
+                "minimum_fixed_income_weight": minimum_fixed,
+                "maximum_fixed_income_weight": maximum_fixed,
+                "sector_tolerance": sector_tolerance,
+                "risk_free_rate": risk_free,
+                "target_return": target_return,
+                "benchmark": normalize_ticker(rf_text),
+                "liquidity_requirement": int(liquidity),
+                "lookback_years": int(lookback),
+                "simulations": int(simulations),
+            })
+            cfg["scoring"]["equity_etf"]["expense_ratio_thresholds"] = [expense_strong, expense_neutral, expense_weak]
+            cfg["scoring"]["fixed_income"]["target_duration"] = float(duration_target)
             st.session_state.cfg = cfg
             st.session_state.optimizer_result = None
-            st.success("Settings applied.")
-    if st.button("Reset to defaults", key="settings_reset"):
-        st.session_state.cfg = load_config()
-        st.session_state.optimizer_result = None
-        st.rerun()
+            if st.session_state.single_result:
+                metrics, _ = st.session_state.single_result
+                st.session_state.single_result = (metrics, score_security(metrics, cfg))
+            if not st.session_state.candidate_raw.empty:
+                st.session_state.candidate_scored = pd.DataFrame(
+                    [{**row.to_dict(), **score_security(row.to_dict(), cfg)} for _, row in st.session_state.candidate_raw.iterrows()]
+                )
+            st.success("Settings applied. Run the optimizer again to use the updated constraints.")
+    st.button("Reset settings to defaults", key="settings_reset", on_click=reset_settings)
 
-# ------------------------- TAB 5 -------------------------
-with tabs[4]:
-    st.subheader("Operating Reserve Assets")
-    st.caption("Enter percentages directly. Only recognized fixed-income reserve ETFs contribute to the model reserve yield; unavailable data stays N/A.")
-    editor = st.session_state.reserve_assets.copy()
-    for col in ("weight", "sec_yield_30d", "yield_to_maturity", "expense_ratio", "volatility", "drawdown"):
-        editor[col] = pd.to_numeric(editor[col], errors="coerce") * 100
-    reserve_assets = st.data_editor(
-        editor, num_rows="dynamic", hide_index=True, use_container_width=True, key="reserve_editor",
-        column_config={
-            "asset": st.column_config.TextColumn("Asset"),
-            "asset_type": st.column_config.TextColumn("Asset Type"),
-            "weight": st.column_config.NumberColumn("Weight (%)", min_value=0, max_value=100, format="%.1f"),
-            "sec_yield_30d": st.column_config.NumberColumn("30-Day SEC Yield (%)", format="%.2f"),
-            "yield_to_maturity": st.column_config.NumberColumn("Yield to Maturity (%)", format="%.2f"),
-            "effective_duration": st.column_config.NumberColumn("Effective Duration (years)", format="%.2f"),
-            "weighted_average_maturity": st.column_config.NumberColumn("Weighted Average Maturity (years)", format="%.2f"),
-            "expense_ratio": st.column_config.NumberColumn("Expense Ratio (%)", format="%.2f"),
-            "volatility": st.column_config.NumberColumn("Historical Volatility (%)", format="%.1f"),
-            "drawdown": st.column_config.NumberColumn("Maximum Drawdown (%)", format="%.1f"),
-            "dollar_volume_30d": st.column_config.NumberColumn("30-Day Average Dollar Volume", format="$%,.0f"),
-            "treasury_credit_exposure": st.column_config.TextColumn("Treasury/Credit Exposure"),
-            "data_date": st.column_config.TextColumn("Data Date"),
-        },
-    )
-    for col in ("weight", "sec_yield_30d", "yield_to_maturity", "expense_ratio", "volatility", "drawdown"):
-        reserve_assets[col] = pd.to_numeric(reserve_assets[col], errors="coerce") / 100
-    reserve_assets["yield"] = pd.to_numeric(
-        reserve_assets["yield_to_maturity"], errors="coerce"
-    ).combine_first(pd.to_numeric(reserve_assets["sec_yield_30d"], errors="coerce"))
-    for i, row in reserve_assets.iterrows():
-        profile = reserve_asset_profile(row.get("asset", ""))
-        if profile == "equity_etf":
-            reserve_assets.at[i, "asset_type"] = "Equity ETF (not reserve-yield eligible)"
-        elif profile == "fixed_income_etf":
-            reserve_assets.at[i, "asset_type"] = "Fixed-income / Treasury ETF"
-    st.session_state.reserve_assets = reserve_assets.drop(columns=["yield"], errors="ignore")
-    try:
-        normalized = normalize_reserve_weights(reserve_assets)
-        st.dataframe(normalized, hide_index=True, use_container_width=True)
-        st.metric("Estimated weighted reserve yield", fmt_pct(weighted_reserve_yield(normalized)))
-        st.caption("Estimated/model yield from eligible fixed-income assets only; not guaranteed. SEC Yield and YTM are distinct fields.")
-    except ValueError as exc:
-        st.warning(str(exc))
-
-# ------------------------- TAB 6 -------------------------
-with tabs[5]:
-    st.subheader("Reserve Optimizer")
-    st.info("Fixed nominal liability: $500,000 = 10 × $50,000 beginning-of-year payments from 2033 through 2042.")
-    st.metric("Zero-yield benchmark", fmt_money(LIABILITY))
-    targets = tuple(float(x) for x in cfg["laura"].get("reserve_funding_targets", (.95, .99, .995, .999)))
-    target = st.selectbox("Funding-success probability target", targets, index=targets.index(.995) if .995 in targets else 0, format_func=fmt_pct, key="reserve_target")
-    simulations = max(100000, int(cfg["laura"].get("reserve_simulations", 100000)))
-    seed = st.number_input("Reproducible simulation seed", min_value=1, value=int(cfg["laura"].get("reserve_simulation_seed", 20260924)), key="reserve_seed")
-    st.caption("The seed makes identical inputs generate identical simulated paths; it is not a market forecast.")
-    try:
-        normalized = normalize_reserve_weights(st.session_state.reserve_assets)
-        reserve_for_yield = st.session_state.reserve_assets.copy()
-        reserve_for_yield["yield"] = pd.to_numeric(
-            reserve_for_yield["yield_to_maturity"], errors="coerce"
-        ).combine_first(pd.to_numeric(reserve_for_yield["sec_yield_30d"], errors="coerce"))
-        y = weighted_reserve_yield(reserve_for_yield)
-        vol = pd.to_numeric(normalized["volatility"], errors="coerce")
-        if vol.isna().any():
-            raise ValueError("Enter historical volatility for every selected fixed-income reserve asset.")
-        portfolio_vol = float(np.sqrt((normalized["weight"] * vol.pow(2)).sum()))
-        st.metric("Estimated weighted reserve yield", fmt_pct(y))
-        st.metric("Deterministic yield-adjusted PV", fmt_money(deterministic_reserve_pv(y)))
-        if st.button("Run reserve analysis", key="reserve_run"):
-            with st.spinner("Running reproducible 100,000+ path analysis..."):
-                st.session_state.reserve_optimizer_result = {
-                    "results": required_reserves(y, portfolio_vol, targets, simulations, int(seed)),
-                    "signature": (tuple(reserve_for_yield[["asset", "weight", "yield"]].fillna("").itertuples(index=False, name=None)), targets, simulations, int(seed)),
-                }
-        signature = (tuple(reserve_for_yield[["asset", "weight", "yield"]].fillna("").itertuples(index=False, name=None)), targets, simulations, int(seed))
-        saved = st.session_state.reserve_optimizer_result
-        if saved and saved.get("signature") == signature:
-            result = saved["results"].copy()
-            display = result.copy()
-            display["Funding-success probability"] = display["funding_target"].map(fmt_pct)
-            display["Failure rate"] = display["failure_rate"].map(fmt_pct)
-            display["Required reserve"] = display["required_reserve"].map(fmt_money)
-            display["Simulated success"] = display["simulated_success"].map(fmt_pct)
-            st.dataframe(display[["Funding-success probability", "Failure rate", "Required reserve", "Simulated success"]], hide_index=True, use_container_width=True)
-            selected = float(result.loc[np.isclose(result["funding_target"], target), "required_reserve"].iloc[0])
-            st.metric("Reserve surplus / shortfall vs $450,000 starting contributions", fmt_money(450000 - selected))
-        else:
-            st.caption("Click Run reserve analysis after reviewing the asset inputs.")
-    except ValueError as exc:
-        st.warning(str(exc))
+    with st.expander("Scoring formulas and model anchors"):
+        st.markdown("""
+        - **Standard and financial stocks:** 80% weighted available fundamental groups (40% EPS/FCF growth, 30% financial strength, 30% valuation) plus 20% risk/resilience. Financial institutions do not receive industrial Net Debt/FCF scoring.
+        - **Equity ETFs:** 35% historical return, 35% risk/resilience, 30% diversification/efficiency.
+        - **Fixed-income ETFs:** 40% stability/risk, 30% return, 30% efficiency/liquidity. Duration fit uses the configurable 4.25-year target; credit and Treasury-relative YTM are scored only when data is present.
+        - **Missing data:** never zero-filled for scoring; available metrics are proportionally reweighted and confidence falls. Expense-ratio anchors are configurable defaults, not user-approved investment recommendations.
+        - Growth scores preserve the configured Revenue/EPS/FCF caps and 20% / 50% / 30% horizon weights. All score outputs are clipped to -100…+100.
+        """)

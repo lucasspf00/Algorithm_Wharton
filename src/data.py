@@ -173,18 +173,65 @@ def _expense_ratio_fraction(info: dict) -> float:
     return raw / 100.0 if raw > 0.01 else raw
 
 
+def _fund_attributes(ticker_obj) -> dict:
+    result = {
+        "sector_weightings": {},
+        "bond_ratings": {},
+        "fund_overview": {},
+    }
+    try:
+        data = ticker_obj.funds_data
+        for attr, key in (
+            ("sector_weightings", "sector_weightings"),
+            ("bond_ratings", "bond_ratings"),
+            ("fund_overview", "fund_overview"),
+        ):
+            value = getattr(data, attr, {})
+            if isinstance(value, dict):
+                result[key] = value
+    except Exception:
+        pass
+    return result
+
+
+def _credit_score_from_exposure(ratings: dict, cfg: dict) -> float:
+    if not ratings:
+        return np.nan
+    government = _safe_num(ratings.get("us_government"))
+    if np.isfinite(government) and government >= .90:
+        return 100.0
+    anchors = cfg["scoring"]["fixed_income"]["credit_rating_scores"]
+    observations = []
+    for rating, points in anchors.items():
+        weight = _safe_num(ratings.get(rating))
+        if np.isfinite(weight) and weight > 0:
+            observations.append((points, weight))
+    total = sum(weight for _, weight in observations)
+    return sum(points * weight for points, weight in observations) / total if total > 0 else np.nan
+
+
 def _price_risk(prices: pd.Series, beta: float) -> dict:
     p = prices.dropna()
     if len(p) < 40:
         return {"annualized_volatility": np.nan, "max_drawdown": np.nan, "downside_deviation": np.nan, "beta": beta}
-    r = p.pct_change().dropna()
+    r = p.pct_change(fill_method=None).dropna()
     vol = float(r.std(ddof=1) * np.sqrt(252)) if len(r) > 2 else np.nan
     peak = p.cummax()
     dd = p / peak - 1.0
     max_dd = abs(float(dd.min())) if len(dd) else np.nan
-    downside = r[r < 0]
-    down_dev = float(downside.std(ddof=1) * np.sqrt(252)) if len(downside) > 2 else np.nan
+    downside = r.clip(upper=0.0)
+    down_dev = float(np.sqrt(np.mean(np.square(downside))) * np.sqrt(252)) if len(downside) else np.nan
     return {"annualized_volatility": vol, "max_drawdown": max_dd, "downside_deviation": down_dev, "beta": beta}
+
+
+def _market_beta(prices: pd.Series, market_prices: pd.Series) -> float:
+    aligned = pd.concat(
+        [prices.pct_change(fill_method=None).rename("asset"), market_prices.pct_change(fill_method=None).rename("market")],
+        axis=1,
+    ).dropna()
+    if len(aligned) < 60 or aligned["market"].var(ddof=1) <= 0:
+        return np.nan
+    return float(aligned["asset"].cov(aligned["market"]) / aligned["market"].var(ddof=1))
 
 
 def _security_profile(ticker: str, info: dict) -> dict[str, str]:
@@ -302,7 +349,71 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
     eve = eve if eve > 0 else np.nan
 
     profile = _security_profile(ticker, info)
-    risk = _price_risk(close, _safe_num(info.get("beta") or info.get("beta3Year")))
+    market_key = f"market::SPY::{cache_dir}"
+    market_prices = _cache_get(cache_dir, market_key, ttl)
+    if market_prices is None:
+        try:
+            market_hist = yf.Ticker("SPY").history(period="10y", auto_adjust=True, actions=False)
+            market_prices = pd.to_numeric(market_hist.get("Close"), errors="coerce").dropna()
+            if not market_prices.empty:
+                _cache_set(cache_dir, market_key, market_prices)
+        except Exception:
+            market_prices = pd.Series(dtype=float)
+    beta = _market_beta(close, market_prices) if ticker != "SPY" and not market_prices.empty else _safe_num(info.get("beta") or info.get("beta3Year"))
+    risk = _price_risk(close, beta)
+    avg_dollar_volume = np.nan
+    if "Volume" in hist.columns:
+        volume = pd.to_numeric(hist["Volume"], errors="coerce").tail(30)
+        dollar_turnover = pd.to_numeric(hist["Close"], errors="coerce").tail(30) * volume
+        if dollar_turnover.notna().any():
+            avg_dollar_volume = float(dollar_turnover.mean())
+    fund_attributes = (
+        _fund_attributes(t)
+        if profile["analysis_profile"] in {"equity_etf", "fixed_income_etf"}
+        else {"sector_weightings": {}, "bond_ratings": {}, "fund_overview": {}}
+    )
+    sector_weights = fund_attributes["sector_weightings"]
+    sector_max = max(sector_weights.values()) if sector_weights else np.nan
+    bond_ratings = fund_attributes["bond_ratings"]
+    credit_score = _credit_score_from_exposure(bond_ratings, cfg)
+    overview = fund_attributes["fund_overview"]
+    rating_sum = sum(
+        _safe_num(bond_ratings.get(key), 0.0)
+        for key in ("aaa", "aa", "a", "bbb", "bb", "b", "below_b")
+    )
+    non_government_ratings = {
+        key: _safe_num(bond_ratings.get(key), 0.0)
+        for key in ("aaa", "aa", "a", "bbb", "bb", "b", "below_b")
+    }
+    exposure_text = (
+        "U.S. Treasury/Government"
+        if _safe_num(bond_ratings.get("us_government"), 0.0) >= .90
+        else ("Credit mix reported" if rating_sum > 0 else "N/A")
+    )
+    latest_market_cap = _safe_num(info.get("marketCap"))
+    net_debt = (
+        _safe_num(info.get("totalDebt")) - _safe_num(info.get("totalCash"))
+        if np.isfinite(_safe_num(info.get("totalDebt"))) and np.isfinite(_safe_num(info.get("totalCash")))
+        else np.nan
+    )
+    annual_fcf = latest_fcf
+    net_debt_to_fcf = (
+        net_debt / annual_fcf
+        if np.isfinite(net_debt) and np.isfinite(annual_fcf) and annual_fcf > 0
+        else np.nan
+    )
+    fcf_yield = annual_fcf / latest_market_cap if np.isfinite(annual_fcf) and annual_fcf >= 0 and np.isfinite(latest_market_cap) and latest_market_cap > 0 else np.nan
+    top10 = np.nan
+    if profile["analysis_profile"] in {"equity_etf", "fixed_income_etf"}:
+        try:
+            holdings = etf_holdings(ticker, cfg)
+            weights = pd.to_numeric(holdings.get("weight"), errors="coerce").dropna()
+            if not weights.empty:
+                top10 = float(weights.nlargest(10).sum())
+        except Exception:
+            pass
+    if profile["analysis_profile"] == "fixed_income_etf" and not exposure_text.startswith("U.S. Treasury"):
+        exposure_text = exposure_text if exposure_text != "N/A" else str(overview.get("categoryName", "N/A"))
     metrics = {
         "ticker": ticker,
         "company": info.get("longName") or info.get("shortName") or ticker,
@@ -352,23 +463,24 @@ def analyze_security(ticker: str, cfg: dict, force_refresh: bool = False) -> tup
         "portfolio_pb": _safe_num(info.get("priceToBook")),
         "distribution_yield": _safe_num(info.get("yield") or info.get("dividendYield")),
         "dividend_yield": _safe_num(info.get("dividendYield")),
-        "sec_yield_30d": _safe_num(
-            info.get("yield")
-            or info.get("yieldToMaturity")
-            or info.get("thirtyDayYield")
-        ),
-        "yield_to_maturity": _safe_num(
-            info.get("yieldToMaturity")
-            or info.get("yieldToMaturityPercent")
-        ),
-        "effective_duration": _safe_num(
-            info.get("duration")
-            or info.get("effectiveDuration")
-        ),
-        "weighted_average_maturity": _safe_num(
-            info.get("maturity")
-            or info.get("weightedAverageMaturity")
-        ),
+        "sec_yield_30d": _safe_num(info.get("thirtyDayYield") or info.get("secYield30Day")),
+        "yield_to_maturity": _safe_num(info.get("yieldToMaturity") or info.get("weightedAverageYieldToMaturity")),
+        "comparable_treasury_ytm": np.nan,
+        "effective_duration": _safe_num(info.get("effectiveDuration") or info.get("duration")),
+        "weighted_average_maturity": _safe_num(info.get("weightedAverageMaturity")),
+        "net_debt": net_debt,
+        "net_debt_to_fcf": net_debt_to_fcf,
+        "interest_coverage": _safe_num(info.get("interestCoverage")),
+        "fcf_yield": fcf_yield,
+        "average_dollar_volume_30d": avg_dollar_volume,
+        "top10_concentration": top10,
+        "largest_sector_weight": sector_max,
+        "sector_weightings": sector_weights,
+        "bond_ratings": non_government_ratings,
+        "weighted_credit_score": credit_score,
+        "treasury_credit_exposure": exposure_text,
+        "eps_history": {str(k.date()): float(v) for k, v in eps.items()} if not eps.empty else {},
+        "fcf_history": {str(k.date()): float(v) for k, v in fcf.items()} if not fcf.empty else {},
         "data_date": str(hist.index[-1].date()) if len(hist.index) else "",
         **risk,
     }
@@ -459,11 +571,23 @@ def download_price_period(tickers: list[str], start: str, end: str) -> pd.DataFr
         raise DataError(f"Historical stress download failed: {e}") from e
     if raw is None or raw.empty:
         return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        close = None
+        for level in range(raw.columns.nlevels):
+            if "Close" in raw.columns.get_level_values(level):
+                close = raw.xs("Close", axis=1, level=level, drop_level=True)
+                break
+        if close is None:
+            return pd.DataFrame()
+        if isinstance(close, pd.Series):
+            close = close.to_frame()
+        if isinstance(close.columns, pd.MultiIndex):
+            close.columns = [next((str(part) for part in col if str(part) in clean), str(col[-1])) for col in close.columns]
+        if len(clean) == 1 and close.shape[1] == 1:
+            close.columns = [clean[0]]
+        return close[[ticker for ticker in clean if ticker in close.columns]]
     if len(clean) == 1:
         if "Close" in raw:
             return raw[["Close"]].rename(columns={"Close": clean[0]})
         return pd.DataFrame()
-    if isinstance(raw.columns, pd.MultiIndex) and "Close" in raw.columns.get_level_values(0):
-        close = raw["Close"].copy()
-        return close[[c for c in clean if c in close.columns]]
     return pd.DataFrame()

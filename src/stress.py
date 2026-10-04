@@ -22,15 +22,19 @@ def historical_portfolio_stress(prices: pd.DataFrame, weights: pd.Series) -> dic
     if w.sum() <= 0:
         return {"available": False, "reason": "No positive portfolio weight has usable history."}
     w = w / w.sum()
-    p = prices[common].dropna(how="any")
+    p = prices[common].apply(pd.to_numeric, errors="coerce")
+    p = p.dropna(how="all")
+    p = p.ffill().dropna(how="any")
     if len(p) < 2:
         return {"available": False, "reason": "There are not enough common price observations in the period."}
-    holding_returns = p.iloc[-1] / p.iloc[0] - 1.0
+    first_prices = p.iloc[0]
+    holding_returns = p.iloc[-1] / first_prices - 1.0
     contributions = w * holding_returns
     portfolio_return = float(contributions.sum())
-    daily = p.pct_change(fill_method=None).dropna(how="any")
-    port_daily = daily @ w
-    wealth = (1 + port_daily).cumprod()
+    # Fixed initial holdings: individual asset wealth paths are aggregated;
+    # daily returns are not treated as if the portfolio rebalanced each day.
+    wealth = p.divide(first_prices, axis="columns").mul(w, axis="columns").sum(axis=1)
+    port_daily = wealth.pct_change(fill_method=None).dropna()
     dd = wealth / wealth.cummax() - 1.0
     max_dd = float(dd.min()) if len(dd) else np.nan
     vol = float(port_daily.std(ddof=1) * np.sqrt(252)) if len(port_daily) > 2 else np.nan
@@ -55,7 +59,7 @@ def hypothetical_stress(weights: pd.Series, metadata: pd.DataFrame, equity_shock
         asset_class = str(meta.loc[ticker, "asset_class"]) if not meta.empty and ticker in meta.index and "asset_class" in meta.columns else "stock"
         if asset_class == "fixed_income":
             shock = fixed_income_shock
-        elif sector == "Information Technology":
+        elif "tech" in sector.lower():
             shock = tech_shock
         else:
             shock = equity_shock

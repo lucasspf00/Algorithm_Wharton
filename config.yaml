@@ -2,20 +2,10 @@ scoring:
   main_score:
     display_range: [-100, 100]
     engines:
-      operating_company: "30% Growth + 40% Quality/Financial Strength + 30% Valuation"
-      financial_stock: "Dedicated Growth + Financial Quality + Valuation"
+      operating_company: "80% Fundamental (40% Growth + 30% Financial Strength + 30% Valuation) + 20% Risk/Resilience"
+      financial_stock: "80% Fundamental (40% Financial Growth + 30% Financial Quality + 30% Valuation) + 20% Risk/Resilience"
       equity_etf: "35% Return + 35% Risk/Resilience + 30% Diversification/Efficiency"
       fixed_income_etf: "40% Stability/Risk + 30% Return + 30% Efficiency/Liquidity"
-  category_weights:
-    growth: 0.30
-    quality: 0.40
-    valuation: 0.30
-
-  growth_branch_weights:
-    revenue: 0.35
-    earnings: 0.35
-    fcf: 0.30
-
   growth_horizon_weights:
     one_year: 0.20
     three_year: 0.50
@@ -35,27 +25,95 @@ scoring:
     net_income_growth_3y: 0.35
     net_income_growth_5y: 0.30
 
-  quality_weights:
-    operating_margin: 0.25
-    net_margin: 0.20
-    return_on_equity: 0.20
-    current_ratio: 0.15
-    debt_to_equity: 0.20
+  stock:
+    fundamental_weight: 0.80
+    risk_weight: 0.20
+    growth_weight: 0.40
+    financial_strength_weight: 0.30
+    valuation_weight: 0.30
+    standard_growth_weights:
+      revenue: 0.35
+      eps: 0.35
+      fcf: 0.30
+    financial_growth_weights:
+      revenue: 0.35
+      eps: 0.35
+      net_income: 0.30
+    financial_quality_weights:
+      return_on_equity: 0.35
+      return_on_assets: 0.25
+      net_margin: 0.20
+      earnings_consistency: 0.20
+    financial_quality_caps:
+      return_on_equity: 0.25
+      return_on_assets: 0.03
+      net_margin: 0.25
+      earnings_consistency: [0.40, 0.70, 1.00]
+    financial_valuation_weights:
+      pe: 0.35
+      pb: 0.35
+      earnings_yield: 0.30
+    financial_pb: [0.75, 2.0, 5.0]
+    net_debt_fcf_weight: 0.50
+    interest_coverage_weight: 0.50
+    pe_weight: 0.50
+    fcf_yield_weight: 0.50
+    net_debt_fcf:
+      strong: 0.0
+      neutral: 3.0
+      weak: 6.0
+    interest_coverage:
+      weak: 1.0
+      neutral: 5.0
+      strong: 15.0
+    pe:
+      strong: 10.0
+      neutral: 25.0
+      weak: 50.0
+    risk_weights:
+      max_drawdown: 0.40
+      annualized_volatility: 0.35
+      beta: 0.25
+    risk_thresholds:
+      max_drawdown: [0.10, 0.30, 0.65]
+      annualized_volatility: [0.10, 0.25, 0.55]
+      beta: [0.50, 1.00, 1.80]
+  equity_etf:
+    return_weight: 0.35
+    risk_weight: 0.35
+    diversification_efficiency_weight: 0.30
+    holdings_weight: 0.3333333333
+    top10_weight: 0.3333333333
+    sector_concentration_weight: 0.3333333334
+    holdings_thresholds: [25, 100, 500]
+    top10_thresholds: [0.25, 0.45, 0.70]
+    sector_thresholds: [0.20, 0.30, 0.45]
+    expense_ratio_thresholds: [0.0005, 0.005, 0.02]
+    dollar_volume_thresholds: [5000000, 50000000, 500000000]
+    return_caps:
+      1y: 0.30
+      3y: 0.20
+      5y: 0.15
+  fixed_income:
+    stability_risk_weight: 0.40
+    return_weight: 0.30
+    efficiency_liquidity_weight: 0.30
+    target_duration: 4.25
+    duration_gap_thresholds: [0.5, 2.0, 4.0]
+    yield_spread_thresholds: [-0.01, 0.0, 0.02]
+    return_caps:
+      1y: 0.15
+      3y: 0.10
+      5y: 0.08
+    credit_rating_scores:
+      aaa: 90
+      aa: 75
+      a: 50
+      bbb: 0
+      bb: -50
+      b: -100
+      below_b: -100
 
-  valuation_weights:
-    trailing_pe: 0.25
-    forward_pe: 0.25
-    price_to_sales: 0.15
-    price_to_book: 0.15
-    ev_to_ebitda: 0.20
-
-  risk_weights:
-    annualized_volatility: 0.35
-    max_drawdown: 0.35
-    downside_deviation: 0.20
-    beta: 0.10
-
-  minimum_data_confidence: 0.55
 
 optimizer:
   lookback_years: 5
@@ -63,32 +121,25 @@ optimizer:
   max_weight: 0.20
   risk_free_rate: 0.04
   covariance_shrinkage: 0.20
+  target_return: 0.06
+  maximum_equity_weight: 1.0
+  minimum_equity_weight: 0.0
+  maximum_fixed_income_weight: 1.0
+  minimum_fixed_income_weight: 0.0
+  sector_tolerance: 0.10
+  benchmark: SPY
+  liquidity_requirement: 5000000
 
 laura:
   contribution_2027: 300000
   contribution_2028: 150000
   annual_payment: 50000
   payment_count: 10
-  reserve_yield: 0.04
-  funding_confidence_target: 0.995
-  preferred_current_portfolio_reference: maximum_sharpe
-  portfolio_blend:
-    maximum_sharpe: 0.50
-    minimum_volatility: 0.50
   goal_portfolio_name: "Laura Goal Portfolio"
   goal_portfolio_reserve_target: 0.995
-  short_selling: false
-  max_holding_weight: 0.20
-  minimum_holding_weight: 0.00
   wins_results_included_in_long_term_projection: false
-  reserve_simulations: 100000
+  projection_simulations: 100000
   reserve_simulation_seed: 20260924
-  reserve_funding_targets:
-    - 0.95
-    - 0.99
-    - 0.995
-    - 0.999
-  reserve_yield_policy: "Only recognized fixed-income reserve ETFs; SEC Yield and YTM remain separate; missing values are unavailable."
 
 stress:
   custom_equity_shock: -0.30

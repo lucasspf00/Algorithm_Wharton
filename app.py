@@ -13,7 +13,7 @@ os.environ.setdefault("SSL_CERT_FILE", certifi.where())
 os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 os.environ.setdefault("CURL_CA_BUNDLE", certifi.where())
 
-from src.config import load_config
+from src.config import load_config, merge_config_defaults
 from src.data import (
     analyze_security,
     batch_analyze,
@@ -36,8 +36,10 @@ st.title("Laura Gao Quantitative Investment System")
 st.caption("Four-tab security scoring, portfolio construction, stress testing, and decision-support app.")
 st.info("Research support for the Wharton Global High School Investment Competition. Official competition materials and team instructions remain authoritative.")
 
-if "cfg" not in st.session_state:
-    st.session_state.cfg = load_config()
+st.session_state.cfg = merge_config_defaults(
+    load_config(),
+    st.session_state.get("cfg", {}),
+)
 cfg = st.session_state.cfg
 defaults = {
     "candidate_tickers": ["AAPL", "MSFT", "GOOGL", "AMZN", "JPM", "LLY", "XOM", "NEE"],

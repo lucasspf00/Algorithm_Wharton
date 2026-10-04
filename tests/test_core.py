@@ -7,7 +7,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.config import load_config
+from src.config import load_config, merge_config_defaults
 from src.data import (
     _expense_ratio_fraction,
     _security_profile,
@@ -28,6 +28,16 @@ from src.scoring import normalize_lower_better, normalize_piecewise, normalize_s
 from src.stress import historical_portfolio_stress, hypothetical_stress
 
 cfg = load_config()
+stale_cfg = merge_config_defaults(cfg, {
+    "optimizer": {
+        "max_weight": .25,
+        "obsolete_setting": True,
+    },
+})
+assert stale_cfg["optimizer"]["minimum_equity_weight"] == cfg["optimizer"]["minimum_equity_weight"]
+assert stale_cfg["optimizer"]["maximum_fixed_income_weight"] == cfg["optimizer"]["maximum_fixed_income_weight"]
+assert stale_cfg["optimizer"]["max_weight"] == .25
+assert stale_cfg["optimizer"]["obsolete_setting"] is True
 
 assert normalize_symmetric(.30, .30) == 100
 assert normalize_symmetric(-.30, .30) == -100
